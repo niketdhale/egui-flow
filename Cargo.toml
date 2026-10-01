@@ -1,0 +1,22 @@
+[package]
+name = "egui-flow"
+description = "A React Flow-style node-graph canvas widget for egui: pan/zoom, draggable nodes, connectable handles, edges, minimap and controls"
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+repository = "https://github.com/niketdhale/egui-flow"
+readme = "README.md"
+keywords = ["egui", "node-graph", "reactflow", "gui"]
+categories = ["gui"]
+
+[features]
+default = []
+# Derive `Serialize`/`Deserialize` for nodes, edges, ids and the viewport.
+serde = ["dep:serde", "egui/serde"]
+
+[dependencies]
+egui = "0.33"
+serde = { version = "1", features = ["derive"], optional = true }
+
+[dev-dependencies]
+eframe = "0.33"
