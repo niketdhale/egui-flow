@@ -81,11 +81,18 @@ impl App {
             e.arrow = true;
             e.label = Some("stream".into());
         }
-        state.connect(a, c, ());
+        if let Some(e) = state.connect(a, c, ()) {
+            let e = state.edge_mut(e).unwrap();
+            e.color = Some(Color32::from_rgb(80, 170, 100));
+            e.width = Some(2.5);
+            e.animated = true;
+            e.animation_speed = -35.0; // marches backwards, faster
+        }
         state.fit_view();
         Self {
             state,
             kind: EdgeKind::Bezier,
+            animate: true,
             log: Vec::new(),
         }
     }
