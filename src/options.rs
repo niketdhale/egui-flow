@@ -39,6 +39,13 @@ pub struct FlowOptions {
     /// Frame all nodes on the first frame.
     pub fit_view_on_init: bool,
     pub fit_view_padding: f32,
+    /// Master switch for UI animation: eased view transitions, node fade-in
+    /// and hover easing. Turn off for reduced-motion users. Edges you marked
+    /// `animated` and explicit [`pulse_edge`](crate::FlowState::pulse_edge)
+    /// calls are unaffected.
+    pub animate: bool,
+    /// Duration in seconds of eased view transitions (zoom buttons, animated fit).
+    pub view_transition: f32,
     /// How close (flow units) a dragged connection must get to a handle to snap to it.
     pub connection_radius: f32,
 }
@@ -62,6 +69,8 @@ impl Default for FlowOptions {
             allow_self_loops: false,
             fit_view_on_init: false,
             fit_view_padding: 50.0,
+            animate: true,
+            view_transition: 0.35,
             connection_radius: 20.0,
         }
     }

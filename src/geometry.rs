@@ -140,6 +140,20 @@ pub fn path_midpoint(path: &[Pos2]) -> Pos2 {
     path.last().copied().unwrap_or(Pos2::ZERO)
 }
 
+/// Point `frac` (0..=1) of the way along the polyline, by length.
+pub fn point_at(path: &[Pos2], frac: f32) -> Pos2 {
+    let total: f32 = path.windows(2).map(|w| (w[1] - w[0]).length()).sum();
+    let mut left = total * frac.clamp(0.0, 1.0);
+    for w in path.windows(2) {
+        let len = (w[1] - w[0]).length();
+        if left <= len && len > 0.0 {
+            return w[0] + (w[1] - w[0]) * (left / len);
+        }
+        left -= len;
+    }
+    path.last().copied().unwrap_or(Pos2::ZERO)
+}
+
 /// Direction of the final segment, for orienting arrowheads.
 pub fn end_direction(path: &[Pos2]) -> Vec2 {
     path.windows(2)
@@ -194,6 +208,15 @@ mod tests {
             dist_to_segment(pos2(-4.0, 3.0), pos2(0.0, 0.0), pos2(10.0, 0.0)),
             5.0
         );
+    }
+
+    #[test]
+    fn point_at_walks_the_path() {
+        let p = [pos2(0.0, 0.0), pos2(10.0, 0.0), pos2(10.0, 10.0)];
+        assert_eq!(point_at(&p, 0.0), pos2(0.0, 0.0));
+        assert_eq!(point_at(&p, 0.25), pos2(5.0, 0.0));
+        assert_eq!(point_at(&p, 0.75), pos2(10.0, 5.0));
+        assert_eq!(point_at(&p, 1.0), pos2(10.0, 10.0));
     }
 
     #[test]

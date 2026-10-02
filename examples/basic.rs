@@ -3,7 +3,7 @@
 use egui::{Color32, Ui};
 use egui_flow::{
     Background, EdgeKind, Flow, FlowEvent, FlowOptions, FlowState, FlowViewer, Handle, HandleId,
-    Node, Side,
+    Node, PulseStyle, Side,
 };
 
 enum Kind {
@@ -58,6 +58,7 @@ impl FlowViewer<Data, ()> for Viewer {
 struct App {
     state: FlowState<Data, ()>,
     kind: EdgeKind,
+    animate: bool,
     log: Vec<String>,
 }
 
@@ -104,6 +105,21 @@ impl eframe::App for App {
                     ui.selectable_value(&mut self.kind, k, name);
                 }
                 ui.separator();
+                if ui.button("Send pulse").clicked() {
+                    let ids: Vec<_> = self.state.edges.iter().map(|e| e.id).collect();
+                    for id in ids {
+                        self.state.pulse_edge(id, PulseStyle::default());
+                    }
+                }
+                if ui.button("Add node").clicked() {
+                    let n = self.state.nodes.len() as f32;
+                    self.state.add_node(
+                        egui::pos2(40.0 * n, 320.0),
+                        Data { kind: Kind::Process, label: "new".into(), gain: 1.0 },
+                    );
+                }
+                ui.checkbox(&mut self.animate, "Animate UI");
+                ui.separator();
                 ui.weak("drag background to pan · wheel to zoom · shift-drag to box select · Delete removes");
             });
         });
@@ -123,6 +139,7 @@ impl eframe::App for App {
                     minimap: true,
                     default_edge_kind: self.kind,
                     snap_to_grid: Some(10.0),
+                    animate: self.animate,
                     ..Default::default()
                 };
                 let out = Flow::new("graph")

@@ -9,6 +9,7 @@
 //! * bezier / straight / step / smooth-step edges, labels, arrows, animation
 //! * click, shift-click and box (shift-drag) selection, Delete to remove
 //! * dots / lines / cross background, minimap, zoom controls
+//! * animated dashed edges, travelling pulses, eased view transitions, node fade-in
 //! * events for everything the application needs to mirror
 //!
 //! ```no_run
@@ -36,9 +37,9 @@ mod view;
 mod viewer;
 
 pub use events::{FlowEvent, FlowResponse};
-pub use geometry::edge_path;
+pub use geometry::{edge_path, point_at};
 pub use options::{Background, FlowOptions};
-pub use state::FlowState;
+pub use state::{FlowState, PulseStyle};
 pub use types::*;
 pub use view::Flow;
 pub use viewer::FlowViewer;

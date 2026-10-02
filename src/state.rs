@@ -1,6 +1,8 @@
 //! The graph model owned by the application.
 
-use egui::{Pos2, Rect, Vec2, vec2};
+use std::collections::{HashMap, HashSet};
+
+use egui::{Color32, Pos2, Rect, Vec2, vec2};
 
 use crate::types::*;
 
@@ -22,6 +24,45 @@ pub(crate) struct NodeDrag {
     pub accum: Vec2,
 }
 
+/// Appearance of a [`FlowState::pulse_edge`] particle.
+#[derive(Clone, Copy, Debug)]
+pub struct PulseStyle {
+    /// `None` uses the selection colour.
+    pub color: Option<Color32>,
+    /// Particle radius in flow units.
+    pub radius: f32,
+    /// Seconds to travel from source to target.
+    pub duration: f32,
+}
+
+impl Default for PulseStyle {
+    fn default() -> Self {
+        Self {
+            color: None,
+            radius: 4.0,
+            duration: 0.8,
+        }
+    }
+}
+
+pub(crate) struct ActivePulse {
+    pub edge: EdgeId,
+    pub style: PulseStyle,
+    /// Set on the first frame the pulse is drawn.
+    pub start: Option<f64>,
+}
+
+pub(crate) struct ViewAnim {
+    pub from: Viewport,
+    pub to: Viewport,
+    pub duration: f32,
+    pub start: Option<f64>,
+}
+
+/// More than this many simultaneous pulses on one edge are dropped, so a
+/// burst of traffic cannot grow the queue without bound.
+const MAX_PULSES_PER_EDGE: usize = 8;
+
 /// Nodes, edges, viewport and selection. Mutate freely between frames; pass
 /// to [`Flow::show`](crate::Flow::show) every frame.
 pub struct FlowState<N, E> {
@@ -33,6 +74,11 @@ pub struct FlowState<N, E> {
     pub(crate) fit_frames: u8,
     pub(crate) initialized: bool,
     pub(crate) interaction: Interaction,
+    pub(crate) pulses: Vec<ActivePulse>,
+    pub(crate) view_anim: Option<ViewAnim>,
+    pub(crate) fit_anim: Option<f32>,
+    pub(crate) known_nodes: HashSet<NodeId>,
+    pub(crate) appear: HashMap<NodeId, f64>,
 }
 
 impl<N, E> Default for FlowState<N, E> {
@@ -46,6 +92,11 @@ impl<N, E> Default for FlowState<N, E> {
             fit_frames: 0,
             initialized: false,
             interaction: Interaction::default(),
+            pulses: Vec::new(),
+            view_anim: None,
+            fit_anim: None,
+            known_nodes: HashSet::new(),
+            appear: HashMap::new(),
         }
     }
 }
@@ -113,6 +164,9 @@ impl<N, E> FlowState<N, E> {
             label: None,
             animated: false,
             arrow: false,
+            color: None,
+            width: None,
+            animation_speed: 20.0,
             selected: false,
             deletable: true,
         });
@@ -216,6 +270,51 @@ impl<N, E> FlowState<N, E> {
         self.fit_frames = 2;
     }
 
+    /// Re-frame the viewport around all nodes with an eased transition
+    /// (`seconds`). Unlike [`fit_view`](Self::fit_view) this assumes node
+    /// sizes are already measured, so call it after the first frame.
+    pub fn fit_view_animated(&mut self, seconds: f32) {
+        self.fit_anim = Some(seconds);
+    }
+
+    /// Ease the viewport to `to` over `seconds`. Any pan or zoom by the user
+    /// cancels the transition. Jumps instead when
+    /// [`FlowOptions::animate`](crate::FlowOptions::animate) is off.
+    pub fn animate_viewport(&mut self, to: Viewport, seconds: f32) {
+        self.view_anim = Some(ViewAnim {
+            from: self.viewport,
+            to,
+            duration: seconds,
+            start: None,
+        });
+    }
+
+    /// Where the viewport is heading: the target of a running transition,
+    /// else the current viewport.
+    pub fn target_viewport(&self) -> Viewport {
+        self.view_anim
+            .as_ref()
+            .map(|a| a.to)
+            .unwrap_or(self.viewport)
+    }
+
+    /// Send a particle along `edge` from source to target, e.g. to show a
+    /// message travelling. Returns `false` if the edge doesn't exist or it
+    /// already has too many pulses in flight.
+    pub fn pulse_edge(&mut self, edge: EdgeId, style: PulseStyle) -> bool {
+        if self.edge(edge).is_none()
+            || self.pulses.iter().filter(|p| p.edge == edge).count() >= MAX_PULSES_PER_EDGE
+        {
+            return false;
+        }
+        self.pulses.push(ActivePulse {
+            edge,
+            style,
+            start: None,
+        });
+        true
+    }
+
     /// The viewport that frames `bounds` inside a canvas of `canvas_size`.
     pub fn viewport_for(
         bounds: Rect,
@@ -301,6 +400,28 @@ mod tests {
         let after = vp.to_flow(anchor);
         assert!((before - after).length() < 1e-3);
         assert_eq!(vp.zoom, 2.0);
+    }
+
+    #[test]
+    fn pulses_are_capped_per_edge_and_need_a_real_edge() {
+        let (mut s, a, b) = two_nodes();
+        let e = s.connect(a, b, ()).unwrap();
+        assert!(!s.pulse_edge(EdgeId(99), PulseStyle::default()));
+        for _ in 0..MAX_PULSES_PER_EDGE {
+            assert!(s.pulse_edge(e, PulseStyle::default()));
+        }
+        assert!(!s.pulse_edge(e, PulseStyle::default()));
+    }
+
+    #[test]
+    fn target_viewport_follows_running_transition() {
+        let mut s: FlowState<(), ()> = FlowState::new();
+        let to = Viewport {
+            pan: vec2(5.0, 5.0),
+            zoom: 2.0,
+        };
+        s.animate_viewport(to, 0.3);
+        assert_eq!(s.target_viewport(), to);
     }
 
     #[test]

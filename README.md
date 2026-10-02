@@ -14,7 +14,11 @@ cargo run -p egui-flow --example basic
 | Custom nodes | implement `FlowViewer::node_ui` with any egui widgets |
 | Handles | `FlowViewer::handles` — any number per node, on any side, source or target |
 | Connecting | drag handle → handle, snapping, live validation (`can_connect`), `Esc` cancels |
-| Edge types | `Bezier`, `Straight`, `Step`, `SmoothStep`; labels, arrowheads, animated dashes |
+| Edge types | `Bezier`, `Straight`, `Step`, `SmoothStep`; labels, arrowheads, per-edge `color` / `width` |
+| Animated edges | `edge.animated = true` marches dashes (`animation_speed`, negative reverses) |
+| Particles along edges | `state.pulse_edge(id, PulseStyle::default())` sends a dot source → target |
+| `fitView({ duration })`, zoom easing | `state.fit_view_animated(secs)`, `state.animate_viewport(vp, secs)`; zoom/fit buttons ease; user input cancels |
+| Node enter transition | nodes added after the first frame fade in |
 | Selection | click, shift-click, shift-drag box select, `Delete`/`Backspace` removes |
 | `snapToGrid` | `FlowOptions::snap_to_grid` |
 | `<Background>` | `Dots`, `Lines`, `Cross`, `None` |
@@ -49,8 +53,13 @@ for event in out.events {
 `FlowState` is plain data (`nodes`, `edges`, `viewport`) that you own and may mutate between frames.
 Node sizes are measured from the rendered content each frame. Enable the `serde` feature to serialize nodes, edges and the viewport.
 
+## Animation
+
+Everything above that moves can be disabled at once with `FlowOptions { animate: false, .. }` (reduced motion): view transitions jump, nodes appear instantly and hover easing is skipped. Edges you marked `animated` and explicit `pulse_edge` calls are your own choice and keep running. Pulses are capped at 8 in flight per edge so a burst of events can't pile up.
+
 ## Notes
 
 * Content scales with zoom by rasterising at 1× and transforming, so text is soft when zoomed in far (same as `egui::Scene`).
 * Selectable labels are disabled inside nodes so dragging on text moves the node; re-enable in `node_ui` if needed.
+* No node exit animation (removed nodes vanish immediately) or per-edge dash patterns.
 * Not yet implemented: re-connecting existing edges by dragging their ends, node resizing, nested/grouped nodes, auto-layout.

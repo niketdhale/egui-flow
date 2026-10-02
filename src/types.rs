@@ -1,6 +1,6 @@
 //! Plain data types: ids, nodes, edges, handles and the viewport.
 
-use egui::{Pos2, Rect, Vec2, pos2, vec2};
+use egui::{Color32, Pos2, Rect, Vec2, pos2, vec2};
 
 macro_rules! id_type {
     ($(#[$m:meta])* $name:ident($inner:ty)) => {
@@ -180,6 +180,13 @@ pub struct Edge<D> {
     pub animated: bool,
     /// Draw an arrowhead at the target.
     pub arrow: bool,
+    /// Stroke colour; `None` uses the theme's edge colour.
+    pub color: Option<Color32>,
+    /// Stroke width in flow units; `None` uses 1.5.
+    pub width: Option<f32>,
+    /// Speed of the marching dashes of an `animated` edge, in flow units per
+    /// second. Negative values run from target to source.
+    pub animation_speed: f32,
     pub selected: bool,
     pub deletable: bool,
 }

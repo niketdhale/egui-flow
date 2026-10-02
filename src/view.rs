@@ -11,7 +11,7 @@ use egui::{
 };
 
 use crate::events::{FlowEvent, FlowResponse};
-use crate::geometry::{dist_to_path, edge_path, end_direction, path_midpoint};
+use crate::geometry::{dist_to_path, edge_path, end_direction, path_midpoint, point_at};
 use crate::options::{Background, FlowOptions};
 use crate::state::{ConnectDrag, FlowState, NodeDrag};
 use crate::types::*;
@@ -22,6 +22,8 @@ use crate::viewer::FlowViewer;
 const MAX_NODE_WIDTH: f32 = 400.0;
 const HANDLE_RADIUS: f32 = 5.0;
 const EDGE_HIT_PX: f32 = 8.0;
+const NODE_FADE_SECS: f64 = 0.25;
+const HOVER_EASE_SECS: f32 = 0.12;
 
 /// A node-graph canvas. Build it each frame and call [`Flow::show`].
 pub struct Flow {
@@ -83,8 +85,11 @@ impl Flow {
         let selection_before = state.selection_snapshot();
         let viewport_before = state.viewport;
 
+        let now = ui.input(|i| i.time);
+        let first_frame = !state.initialized;
+
         // --- fit view ------------------------------------------------------
-        if o.fit_view_on_init && !state.initialized {
+        if o.fit_view_on_init && first_frame {
             state.fit_frames = 2;
         }
         state.initialized = true;
@@ -99,6 +104,60 @@ impl Flow {
                 ui.ctx().request_repaint();
             }
             state.fit_frames -= 1;
+        }
+        if let Some(seconds) = state.fit_anim.take()
+            && let Some(bounds) = state.bounds()
+        {
+            let target = FlowState::<N, E>::viewport_for(
+                bounds,
+                canvas.size(),
+                o.fit_view_padding,
+                (o.min_zoom, o.max_zoom.min(1.5)),
+            );
+            state.animate_viewport(target, seconds);
+        }
+
+        // --- eased view transition -----------------------------------------
+        if let Some(a) = state.view_anim.as_mut() {
+            let start = *a.start.get_or_insert(now);
+            let t = if o.animate {
+                (((now - start) as f32) / a.duration.max(1e-3)).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            let e = 1.0 - (1.0 - t).powi(3);
+            let (from, to) = (a.from, a.to);
+            state.viewport = Viewport {
+                pan: from.pan + (to.pan - from.pan) * e,
+                zoom: from.zoom * (to.zoom / from.zoom).powf(e),
+            };
+            if t >= 1.0 {
+                state.view_anim = None;
+            } else {
+                ui.ctx().request_repaint();
+            }
+        }
+
+        // --- node fade-in bookkeeping ---------------------------------------
+        state
+            .known_nodes
+            .retain(|id| state.nodes.iter().any(|n| n.id == *id));
+        for n in &state.nodes {
+            if state.known_nodes.insert(n.id) && !first_frame && o.animate {
+                state.appear.insert(n.id, now);
+            }
+        }
+        let mut alphas: HashMap<NodeId, f32> = HashMap::new();
+        state.appear.retain(|id, start| {
+            let t = ((now - *start) / NODE_FADE_SECS) as f32;
+            if t >= 1.0 {
+                return false;
+            }
+            alphas.insert(*id, t.clamp(0.0, 1.0));
+            true
+        });
+        if !alphas.is_empty() {
+            ui.ctx().request_repaint();
         }
 
         // --- wheel / pinch -------------------------------------------------
@@ -117,10 +176,12 @@ impl Flow {
             let mut factor = zoom_delta;
             if o.zoom_on_scroll {
                 factor *= (scroll.y * 0.0015).exp();
-            } else {
+            } else if scroll != Vec2::ZERO {
                 state.viewport.pan += scroll;
+                state.view_anim = None;
             }
             if factor != 1.0 {
+                state.view_anim = None;
                 let rel = (p - canvas.min).to_pos2();
                 state.viewport.zoom_at(rel, factor, o.min_zoom, o.max_zoom);
             }
@@ -156,6 +217,7 @@ impl Flow {
             && state.interaction.box_select.is_none()
             && (pane.dragged_by(PointerButton::Primary) || pane.dragged_by(PointerButton::Middle))
         {
+            state.view_anim = None;
             state.viewport.pan += pane.drag_delta() * state.viewport.zoom;
             tf = make_tf(&state.viewport);
             ui.ctx().set_transform_layer(layer_id, tf);
@@ -306,30 +368,47 @@ impl Flow {
 
         // --- pass 2a: draw edges -------------------------------------------
         let cp = cui.painter().clone();
-        let time = ui.input(|i| i.time) as f32;
         let mut order: Vec<_> = geoms.iter().collect();
         order.sort_by_key(|(i, _, _)| state.edges[*i].selected);
         for (i, path, _) in order {
             let e = &state.edges[*i];
             let hovered = hovered_edge == Some(*i);
+            let default_color = visuals
+                .widgets
+                .noninteractive
+                .fg_stroke
+                .color
+                .gamma_multiply(0.7);
             let color = if e.selected {
                 sel_color
             } else {
-                visuals
-                    .widgets
-                    .noninteractive
-                    .fg_stroke
-                    .color
-                    .gamma_multiply(0.7)
+                e.color.unwrap_or(default_color)
             };
-            let stroke = Stroke::new(if e.selected || hovered { 2.5_f32 } else { 1.5 }, color);
+            let base_width = e.width.unwrap_or(1.5);
+            let target_width = if e.selected || hovered {
+                base_width + 1.0
+            } else {
+                base_width
+            };
+            let width = if o.animate {
+                ui.ctx().animate_value_with_time(
+                    id.with(("edge_width", e.id)),
+                    target_width,
+                    HOVER_EASE_SECS,
+                )
+            } else {
+                target_width
+            };
+            let stroke = Stroke::new(width, color);
             if e.animated {
+                // Dash period is 6 + 4; wrapping keeps f32 precise on long runs.
+                let offset = (now * e.animation_speed as f64).rem_euclid(10.0) as f32;
                 cp.extend(Shape::dashed_line_with_offset(
                     path,
                     stroke,
                     &[6.0],
                     &[4.0],
-                    -time * 20.0,
+                    -offset,
                 ));
                 ui.ctx().request_repaint();
             } else {
@@ -362,6 +441,40 @@ impl Flow {
             }
         }
 
+        // --- pulses travelling along edges ----------------------------------
+        let paths: HashMap<EdgeId, &Vec<Pos2>> = geoms
+            .iter()
+            .map(|(i, path, _)| (state.edges[*i].id, path))
+            .collect();
+        state.pulses.retain_mut(|p| {
+            let start = *p.start.get_or_insert(now);
+            let t = ((now - start) / p.style.duration.max(1e-3) as f64) as f32;
+            let Some(path) = paths.get(&p.edge) else {
+                return false;
+            };
+            if t >= 1.0 {
+                return false;
+            }
+            let eased = t * t * (3.0 - 2.0 * t);
+            let color = p.style.color.unwrap_or(sel_color);
+            // A short fading trail behind the head.
+            for k in 0..4 {
+                let back = eased - 0.03 * k as f32;
+                if back < 0.0 {
+                    break;
+                }
+                cp.circle_filled(
+                    point_at(path, back),
+                    p.style.radius * (1.0 - 0.18 * k as f32),
+                    color.gamma_multiply(1.0 - 0.25 * k as f32),
+                );
+            }
+            true
+        });
+        if !state.pulses.is_empty() {
+            ui.ctx().request_repaint();
+        }
+
         // --- pass 2b: node contents ----------------------------------------
         for i in 0..state.nodes.len() {
             let node = &mut state.nodes[i];
@@ -374,6 +487,9 @@ impl Flow {
                 |ui| {
                     // Selectable labels would swallow the drag that should move the node.
                     ui.style_mut().interaction.selectable_labels = false;
+                    if let Some(a) = alphas.get(&node.id) {
+                        ui.set_opacity(*a);
+                    }
                     frame.show(ui, |ui| viewer.node_ui(ui, node))
                 },
             );
@@ -383,7 +499,10 @@ impl Flow {
                 cp.rect_stroke(
                     rect,
                     6.0,
-                    Stroke::new(2.0_f32, sel_color),
+                    Stroke::new(
+                        2.0_f32,
+                        sel_color.gamma_multiply(alphas.get(&node.id).copied().unwrap_or(1.0)),
+                    ),
                     StrokeKind::Outside,
                 );
             }
@@ -422,18 +541,33 @@ impl Flow {
                     connection_between(state, &handles, &*viewer, &o, from, (n.id, h.id)).is_some()
                 });
                 let active = hr.hovered() || connecting == Some((n.id, h.id));
-                let r = if active || valid_target {
+                let target_r = if active || valid_target {
                     HANDLE_RADIUS + 1.5
                 } else {
                     HANDLE_RADIUS
                 };
+                let r = if o.animate {
+                    ui.ctx().animate_value_with_time(
+                        id.with(("handle_radius", n.id, h.id)),
+                        target_r,
+                        HOVER_EASE_SECS,
+                    )
+                } else {
+                    target_r
+                };
+                let alpha = alphas.get(&n.id).copied().unwrap_or(1.0);
                 let fill = if active || valid_target {
                     sel_color
                 } else {
                     visuals.widgets.inactive.fg_stroke.color
-                };
+                }
+                .gamma_multiply(alpha);
                 cp.circle_filled(pos, r, fill);
-                cp.circle_stroke(pos, r, Stroke::new(1.5_f32, visuals.window_fill));
+                cp.circle_stroke(
+                    pos,
+                    r,
+                    Stroke::new(1.5_f32, visuals.window_fill.gamma_multiply(alpha)),
+                );
                 if let Some(text) = viewer.handle_label(n, h.id) {
                     let galley = cp.layout_no_wrap(
                         text,
@@ -705,13 +839,17 @@ fn controls<N, E>(ui: &Ui, id: Id, canvas: Rect, state: &mut FlowState<N, E>, o:
             Frame::popup(ui.style()).inner_margin(4.0).show(ui, |ui| {
                 let center = (canvas.size() / 2.0).to_pos2();
                 if ui.button("+").on_hover_text("Zoom in").clicked() {
-                    state.viewport.zoom_at(center, 1.25, o.min_zoom, o.max_zoom);
+                    let mut to = state.target_viewport();
+                    to.zoom_at(center, 1.25, o.min_zoom, o.max_zoom);
+                    state.animate_viewport(to, o.view_transition);
                 }
                 if ui.button("\u{2212}").on_hover_text("Zoom out").clicked() {
-                    state.viewport.zoom_at(center, 0.8, o.min_zoom, o.max_zoom);
+                    let mut to = state.target_viewport();
+                    to.zoom_at(center, 0.8, o.min_zoom, o.max_zoom);
+                    state.animate_viewport(to, o.view_transition);
                 }
                 if ui.button("Fit").on_hover_text("Fit view").clicked() {
-                    state.fit_view();
+                    state.fit_view_animated(o.view_transition);
                 }
             });
         });
@@ -781,6 +919,7 @@ fn minimap<N, E, V: FlowViewer<N, E>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PulseStyle;
     use egui::{Context, Event, RawInput};
 
     struct V;
@@ -796,10 +935,22 @@ mod tests {
         events: Vec<Event>,
         fit: bool,
     ) -> Vec<FlowEvent<&'static str, ()>> {
+        run_frame_at(ctx, state, events, fit, None, true)
+    }
+
+    fn run_frame_at(
+        ctx: &Context,
+        state: &mut FlowState<&'static str, ()>,
+        events: Vec<Event>,
+        fit: bool,
+        time: Option<f64>,
+        animate: bool,
+    ) -> Vec<FlowEvent<&'static str, ()>> {
         let mut out = Vec::new();
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
             events,
+            time,
             ..Default::default()
         };
         let _ = ctx.run(input, |ctx| {
@@ -809,6 +960,7 @@ mod tests {
                     let opts = FlowOptions {
                         minimap: true,
                         fit_view_on_init: fit,
+                        animate,
                         ..Default::default()
                     };
                     out = Flow::new("t").options(opts).show(ui, state, &mut V).events;
@@ -902,5 +1054,93 @@ mod tests {
         assert_eq!(s.edges.len(), 1, "{events:?}");
         assert_eq!((s.edges[0].source, s.edges[0].target), (a, b));
         assert!(events.iter().any(|e| matches!(e, FlowEvent::Connected(_))));
+    }
+
+    #[test]
+    fn viewport_transition_eases_then_lands_on_target() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        s.add_node(pos2(0.0, 0.0), "a");
+        run_frame_at(&ctx, &mut s, vec![], false, Some(0.0), true);
+        let to = Viewport {
+            pan: vec2(200.0, 100.0),
+            zoom: 2.0,
+        };
+        s.animate_viewport(to, 0.4);
+        run_frame_at(&ctx, &mut s, vec![], false, Some(1.0), true);
+        run_frame_at(&ctx, &mut s, vec![], false, Some(1.2), true);
+        assert!(
+            s.viewport.zoom > 1.0 && s.viewport.zoom < 2.0,
+            "{:?}",
+            s.viewport
+        );
+        run_frame_at(&ctx, &mut s, vec![], false, Some(2.0), true);
+        assert_eq!(s.viewport, to);
+        assert!(s.view_anim.is_none());
+    }
+
+    #[test]
+    fn viewport_transition_jumps_when_animation_is_off() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        s.add_node(pos2(0.0, 0.0), "a");
+        run_frame_at(&ctx, &mut s, vec![], false, Some(0.0), false);
+        let to = Viewport {
+            pan: vec2(50.0, 50.0),
+            zoom: 1.5,
+        };
+        s.animate_viewport(to, 5.0);
+        run_frame_at(&ctx, &mut s, vec![], false, Some(0.1), false);
+        assert_eq!(s.viewport, to);
+    }
+
+    #[test]
+    fn pulses_travel_then_expire() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(0.0, 0.0), "a");
+        let b = s.add_node(pos2(300.0, 100.0), "b");
+        let e = s.connect(a, b, ()).unwrap();
+        run_frame_at(&ctx, &mut s, vec![], false, Some(0.0), true);
+        assert!(s.pulse_edge(
+            e,
+            PulseStyle {
+                duration: 0.5,
+                ..Default::default()
+            }
+        ));
+        run_frame_at(&ctx, &mut s, vec![], false, Some(1.0), true);
+        run_frame_at(&ctx, &mut s, vec![], false, Some(1.25), true);
+        assert_eq!(s.pulses.len(), 1, "still in flight mid-way");
+        run_frame_at(&ctx, &mut s, vec![], false, Some(2.0), true);
+        assert!(s.pulses.is_empty(), "expired after its duration");
+    }
+
+    #[test]
+    fn pulse_on_removed_edge_is_dropped() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(0.0, 0.0), "a");
+        let b = s.add_node(pos2(300.0, 100.0), "b");
+        let e = s.connect(a, b, ()).unwrap();
+        run_frame_at(&ctx, &mut s, vec![], false, Some(0.0), true);
+        s.pulse_edge(e, PulseStyle::default());
+        s.remove_edge(e);
+        run_frame_at(&ctx, &mut s, vec![], false, Some(0.1), true);
+        assert!(s.pulses.is_empty());
+    }
+
+    #[test]
+    fn nodes_added_later_fade_in_but_initial_ones_do_not() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        s.add_node(pos2(0.0, 0.0), "first");
+        run_frame_at(&ctx, &mut s, vec![], false, Some(0.0), true);
+        assert!(s.appear.is_empty(), "initial nodes appear instantly");
+        let late = s.add_node(pos2(100.0, 0.0), "late");
+        run_frame_at(&ctx, &mut s, vec![], false, Some(1.0), true);
+        assert!(s.appear.contains_key(&late));
+        run_frame_at(&ctx, &mut s, vec![], false, Some(2.0), true);
+        assert!(s.appear.is_empty(), "fade finished");
     }
 }
