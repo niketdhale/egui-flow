@@ -1,9 +1,15 @@
 # egui-flow
 
+[![CI](https://github.com/niketdhale/egui-flow/actions/workflows/ci.yml/badge.svg)](https://github.com/niketdhale/egui-flow/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![egui 0.33](https://img.shields.io/badge/egui-0.33-orange.svg)](https://github.com/emilk/egui)
+[![Rust edition 2024](https://img.shields.io/badge/rust-edition%202024-dea584.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
+
 A [React Flow](https://reactflow.dev/)-style node-graph canvas for [egui](https://github.com/emilk/egui), in pure Rust.
 
 ```sh
-cargo run -p egui-flow --example basic
+cargo run --example basic   # node graph canvas
+cargo run --example icons   # built-in icon gallery
 ```
 
 ## Features
@@ -16,7 +22,10 @@ cargo run -p egui-flow --example basic
 | Connecting | drag handle → handle, snapping, live validation (`can_connect`), `Esc` cancels |
 | Edge types | `Bezier`, `Straight`, `Step`, `SmoothStep`; labels, arrowheads, per-edge `color` / `width` |
 | Animated edges | `edge.animated = true` marches dashes (`animation_speed`, negative reverses) |
+| Icons | built-in `Icon` set (check, close, plus, minus, chevrons, triangles, arrows) via `icon(ui, Icon::Check, 14.0)` / `icon_button(..)`; painter-drawn, so no font, SVG or asset is needed and they follow the text colour |
 | Particles along edges | `state.pulse_edge(id, PulseStyle::default())` sends a dot source → target |
+| Pulse direction, delay, label | `PulseStyle { direction: PulseDirection::Reverse, delay, label, .. }` or `pulse_edge_reverse`; delays let you sequence the legs of a route; the label shows on hover |
+| Pulse limits | `state.max_pulses_per_edge` (default 8) and `state.pulse_overflow` (`Drop` or `ReplaceOldest`) |
 | `fitView({ duration })`, zoom easing | `state.fit_view_animated(secs)`, `state.animate_viewport(vp, secs)`; zoom/fit buttons ease; user input cancels |
 | Node enter transition | nodes added after the first frame fade in |
 | Selection | click, shift-click, shift-drag box select, `Delete`/`Backspace` removes |
@@ -53,9 +62,58 @@ for event in out.events {
 `FlowState` is plain data (`nodes`, `edges`, `viewport`) that you own and may mutate between frames.
 Node sizes are measured from the rendered content each frame. Enable the `serde` feature to serialize nodes, edges and the viewport.
 
+## Pulses
+
+```rust
+use egui_flow::{PulseDirection, PulseOverflow, PulseStyle};
+
+// A frame travelling Engine → CAN1, then CAN1 → Gateway half a second later.
+state.pulse_edge(engine_to_can1, PulseStyle { label: Some("0x1A0".into()), ..Default::default() });
+state.pulse_edge(can1_to_gateway, PulseStyle { delay: 0.5, ..Default::default() });
+// Bus → receiver, against the edge's own direction.
+state.pulse_edge_reverse(bus_to_ecu, PulseStyle::default());
+
+state.max_pulses_per_edge = 16;
+state.pulse_overflow = PulseOverflow::ReplaceOldest; // newest pulse wins under heavy traffic
+```
+
+## Multiple connection points
+
+Give a node several handles from `FlowViewer::handles`, each with its own side and `offset` (`0.0..=1.0` along that side), and select them with `source_handle` / `target_handle` on the edge, so a gateway's wires to CAN1 and CAN2 leave from different points:
+
+```rust
+fn handles(&self, _node: &Node<Ecu>) -> Vec<Handle> {
+    vec![
+        Handle::target(Handle::DEFAULT_TARGET, Side::Left),
+        Handle::source(HandleId(10), Side::Right).with_offset(0.3), // CAN1
+        Handle::source(HandleId(11), Side::Right).with_offset(0.7), // CAN2
+    ]
+}
+```
+
+## Icons
+
+```rust
+use egui_flow::{Icon, icon, icon_button};
+
+icon(ui, Icon::Check, 14.0);
+if icon_button(ui, Icon::Close, 14.0).clicked() { /* ... */ }
+Icon::TriangleDown.paint(ui.painter(), rect, color); // at a position of your choice
+```
+
+The icons are drawn with egui's painter, so they never render as empty boxes like missing font glyphs. `Icon::ALL` lists them.
+
+## Development
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-features
+```
+
 ## Animation
 
-Everything above that moves can be disabled at once with `FlowOptions { animate: false, .. }` (reduced motion): view transitions jump, nodes appear instantly and hover easing is skipped. Edges you marked `animated` and explicit `pulse_edge` calls are your own choice and keep running. Pulses are capped at 8 in flight per edge so a burst of events can't pile up.
+Everything above that moves can be disabled at once with `FlowOptions { animate: false, .. }` (reduced motion): view transitions jump, nodes appear instantly and hover easing is skipped. Edges you marked `animated` and explicit `pulse_edge` calls are your own choice and keep running. Pulses are capped per edge (8 by default, see above) so a burst of events can't pile up.
 
 ## Notes
 
