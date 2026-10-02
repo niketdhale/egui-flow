@@ -10,6 +10,7 @@
 //! * click, shift-click and box (shift-drag) selection, Delete to remove
 //! * dots / lines / cross background, minimap, zoom controls
 //! * animated dashed edges, travelling pulses, eased view transitions, node fade-in
+//! * built-in vector [`Icon`]s (check, chevrons, triangles, ...) that need no font
 //! * events for everything the application needs to mirror
 //!
 //! ```no_run
@@ -30,6 +31,7 @@
 
 mod events;
 mod geometry;
+mod icons;
 mod options;
 mod state;
 mod types;
@@ -38,6 +40,7 @@ mod viewer;
 
 pub use events::{FlowEvent, FlowResponse};
 pub use geometry::{edge_path, point_at};
+pub use icons::{Icon, icon, icon_button};
 pub use options::{Background, FlowOptions};
 pub use state::{FlowState, PulseDirection, PulseOverflow, PulseStyle};
 pub use types::*;

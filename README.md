@@ -16,6 +16,7 @@ cargo run -p egui-flow --example basic
 | Connecting | drag handle → handle, snapping, live validation (`can_connect`), `Esc` cancels |
 | Edge types | `Bezier`, `Straight`, `Step`, `SmoothStep`; labels, arrowheads, per-edge `color` / `width` |
 | Animated edges | `edge.animated = true` marches dashes (`animation_speed`, negative reverses) |
+| Icons | `egui_flow::icon(ui, Icon::Check, 14.0)` / `icon_button(..)`: painter-drawn, no font or asset needed |
 | Particles along edges | `state.pulse_edge(id, PulseStyle::default())` sends a dot source → target; `pulse_edge_reverse` or `PulseStyle { direction, delay, label, .. }` for the other way, a start delay and a hover label; `state.max_pulses_per_edge` / `pulse_overflow` control the cap |
 | `fitView({ duration })`, zoom easing | `state.fit_view_animated(secs)`, `state.animate_viewport(vp, secs)`; zoom/fit buttons ease; user input cancels |
 | Node enter transition | nodes added after the first frame fade in |
