@@ -13,7 +13,7 @@ use egui::{
 use crate::events::{FlowEvent, FlowResponse};
 use crate::geometry::{dist_to_path, edge_path, end_direction, path_midpoint, point_at};
 use crate::options::{Background, FlowOptions};
-use crate::state::{ConnectDrag, FlowState, NodeDrag};
+use crate::state::{ConnectDrag, FlowState, NodeDrag, PulseDirection};
 use crate::types::*;
 use crate::viewer::FlowViewer;
 
@@ -446,21 +446,34 @@ impl Flow {
             .iter()
             .map(|(i, path, _)| (state.edges[*i].id, path))
             .collect();
+        let mut hovered_pulse: Option<(Pos2, String)> = None;
         state.pulses.retain_mut(|p| {
-            let start = *p.start.get_or_insert(now);
-            let t = ((now - start) / p.style.duration.max(1e-3) as f64) as f32;
+            let start = *p.start.get_or_insert(now) + p.style.delay.max(0.0) as f64;
             let Some(path) = paths.get(&p.edge) else {
                 return false;
             };
+            let t = ((now - start) / p.style.duration.max(1e-3) as f64) as f32;
             if t >= 1.0 {
                 return false;
             }
+            if t < 0.0 {
+                return true; // still waiting out its delay
+            }
             let eased = t * t * (3.0 - 2.0 * t);
+            let eased = match p.style.direction {
+                PulseDirection::Forward => eased,
+                PulseDirection::Reverse => 1.0 - eased,
+            };
+            let sign = if p.style.direction == PulseDirection::Reverse {
+                -1.0
+            } else {
+                1.0
+            };
             let color = p.style.color.unwrap_or(sel_color);
             // A short fading trail behind the head.
             for k in 0..4 {
-                let back = eased - 0.03 * k as f32;
-                if back < 0.0 {
+                let back = eased - sign * 0.03 * k as f32;
+                if !(0.0..=1.0).contains(&back) {
                     break;
                 }
                 cp.circle_filled(
@@ -469,8 +482,29 @@ impl Flow {
                     color.gamma_multiply(1.0 - 0.25 * k as f32),
                 );
             }
+            if let Some(label) = &p.style.label {
+                let head = point_at(path, eased);
+                let reach = (p.style.radius + 4.0).max(8.0 / state.viewport.zoom.max(1e-3));
+                if pane.hovered()
+                    && hovered_pulse.is_none()
+                    && let Some(pf) = pointer_scene(&tf)
+                    && (pf - head).length() <= reach
+                {
+                    hovered_pulse = Some((head, label.clone()));
+                }
+            }
             true
         });
+        if let Some((at, label)) = hovered_pulse {
+            let galley = cp.layout_no_wrap(label, FontId::proportional(12.0), visuals.text_color());
+            let center = at + vec2(0.0, -(galley.size().y + 14.0));
+            cp.rect_filled(
+                Rect::from_center_size(center, galley.size() + vec2(8.0, 4.0)),
+                3.0,
+                visuals.window_fill,
+            );
+            cp.galley(center - galley.size() / 2.0, galley, visuals.text_color());
+        }
         if !state.pulses.is_empty() {
             ui.ctx().request_repaint();
         }
@@ -1114,6 +1148,29 @@ mod tests {
         assert_eq!(s.pulses.len(), 1, "still in flight mid-way");
         run_frame_at(&ctx, &mut s, vec![], false, Some(2.0), true);
         assert!(s.pulses.is_empty(), "expired after its duration");
+    }
+
+    #[test]
+    fn delayed_pulse_waits_before_expiring() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(0.0, 0.0), "a");
+        let b = s.add_node(pos2(300.0, 100.0), "b");
+        let e = s.connect(a, b, ()).unwrap();
+        run_frame_at(&ctx, &mut s, vec![], false, Some(0.0), true);
+        s.pulse_edge_reverse(
+            e,
+            PulseStyle {
+                duration: 0.5,
+                delay: 1.0,
+                ..Default::default()
+            },
+        );
+        run_frame_at(&ctx, &mut s, vec![], false, Some(1.0), true);
+        run_frame_at(&ctx, &mut s, vec![], false, Some(1.8), true);
+        assert_eq!(s.pulses.len(), 1, "still waiting out its delay");
+        run_frame_at(&ctx, &mut s, vec![], false, Some(2.6), true);
+        assert!(s.pulses.is_empty());
     }
 
     #[test]

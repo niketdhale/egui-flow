@@ -39,7 +39,7 @@ mod viewer;
 pub use events::{FlowEvent, FlowResponse};
 pub use geometry::{edge_path, point_at};
 pub use options::{Background, FlowOptions};
-pub use state::{FlowState, PulseStyle};
+pub use state::{FlowState, PulseDirection, PulseOverflow, PulseStyle};
 pub use types::*;
 pub use view::Flow;
 pub use viewer::FlowViewer;

@@ -24,15 +24,43 @@ pub(crate) struct NodeDrag {
     pub accum: Vec2,
 }
 
+/// Which way a pulse travels along its edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PulseDirection {
+    /// From the edge's source to its target.
+    #[default]
+    Forward,
+    /// From the edge's target back to its source.
+    Reverse,
+}
+
+/// What [`FlowState::pulse_edge`] does when an edge is already at
+/// [`FlowState::max_pulses_per_edge`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PulseOverflow {
+    /// Reject the new pulse (`pulse_edge` returns `false`).
+    #[default]
+    Drop,
+    /// Remove the oldest pulse on that edge to make room.
+    ReplaceOldest,
+}
+
 /// Appearance of a [`FlowState::pulse_edge`] particle.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct PulseStyle {
     /// `None` uses the selection colour.
     pub color: Option<Color32>,
     /// Particle radius in flow units.
     pub radius: f32,
-    /// Seconds to travel from source to target.
+    /// Seconds to travel along the edge.
     pub duration: f32,
+    /// Direction of travel.
+    pub direction: PulseDirection,
+    /// Seconds to wait before the pulse appears, so several legs of a route
+    /// can be sequenced.
+    pub delay: f32,
+    /// Shown next to the pulse while the pointer hovers it.
+    pub label: Option<String>,
 }
 
 impl Default for PulseStyle {
@@ -41,6 +69,9 @@ impl Default for PulseStyle {
             color: None,
             radius: 4.0,
             duration: 0.8,
+            direction: PulseDirection::Forward,
+            delay: 0.0,
+            label: None,
         }
     }
 }
@@ -59,9 +90,8 @@ pub(crate) struct ViewAnim {
     pub start: Option<f64>,
 }
 
-/// More than this many simultaneous pulses on one edge are dropped, so a
-/// burst of traffic cannot grow the queue without bound.
-const MAX_PULSES_PER_EDGE: usize = 8;
+/// Default for [`FlowState::max_pulses_per_edge`].
+const DEFAULT_MAX_PULSES_PER_EDGE: usize = 8;
 
 /// Nodes, edges, viewport and selection. Mutate freely between frames; pass
 /// to [`Flow::show`](crate::Flow::show) every frame.
@@ -69,6 +99,11 @@ pub struct FlowState<N, E> {
     pub nodes: Vec<Node<N>>,
     pub edges: Vec<Edge<E>>,
     pub viewport: Viewport,
+    /// Most pulses (including delayed ones) allowed in flight on one edge, so a
+    /// burst of traffic cannot grow the queue without bound.
+    pub max_pulses_per_edge: usize,
+    /// What to do with a pulse beyond `max_pulses_per_edge`.
+    pub pulse_overflow: PulseOverflow,
     next_node: u64,
     next_edge: u64,
     pub(crate) fit_frames: u8,
@@ -87,6 +122,8 @@ impl<N, E> Default for FlowState<N, E> {
             nodes: Vec::new(),
             edges: Vec::new(),
             viewport: Viewport::default(),
+            max_pulses_per_edge: DEFAULT_MAX_PULSES_PER_EDGE,
+            pulse_overflow: PulseOverflow::Drop,
             next_node: 1,
             next_edge: 1,
             fit_frames: 0,
@@ -298,14 +335,22 @@ impl<N, E> FlowState<N, E> {
             .unwrap_or(self.viewport)
     }
 
-    /// Send a particle along `edge` from source to target, e.g. to show a
-    /// message travelling. Returns `false` if the edge doesn't exist or it
-    /// already has too many pulses in flight.
+    /// Send a particle along `edge`, by default from source to target (see
+    /// [`PulseStyle::direction`] and [`PulseStyle::delay`]). Returns `false` if
+    /// the edge doesn't exist, or it is at [`max_pulses_per_edge`](Self::max_pulses_per_edge)
+    /// and [`pulse_overflow`](Self::pulse_overflow) is `Drop`.
     pub fn pulse_edge(&mut self, edge: EdgeId, style: PulseStyle) -> bool {
-        if self.edge(edge).is_none()
-            || self.pulses.iter().filter(|p| p.edge == edge).count() >= MAX_PULSES_PER_EDGE
-        {
+        if self.edge(edge).is_none() {
             return false;
+        }
+        let on_edge = self.pulses.iter().filter(|p| p.edge == edge).count();
+        if on_edge >= self.max_pulses_per_edge.max(1) {
+            if self.pulse_overflow == PulseOverflow::Drop {
+                return false;
+            }
+            if let Some(i) = self.pulses.iter().position(|p| p.edge == edge) {
+                self.pulses.remove(i);
+            }
         }
         self.pulses.push(ActivePulse {
             edge,
@@ -313,6 +358,12 @@ impl<N, E> FlowState<N, E> {
             start: None,
         });
         true
+    }
+
+    /// Like [`pulse_edge`](Self::pulse_edge) but travelling from target to source.
+    pub fn pulse_edge_reverse(&mut self, edge: EdgeId, mut style: PulseStyle) -> bool {
+        style.direction = PulseDirection::Reverse;
+        self.pulse_edge(edge, style)
     }
 
     /// The viewport that frames `bounds` inside a canvas of `canvas_size`.
@@ -407,10 +458,29 @@ mod tests {
         let (mut s, a, b) = two_nodes();
         let e = s.connect(a, b, ()).unwrap();
         assert!(!s.pulse_edge(EdgeId(99), PulseStyle::default()));
-        for _ in 0..MAX_PULSES_PER_EDGE {
+        for _ in 0..DEFAULT_MAX_PULSES_PER_EDGE {
             assert!(s.pulse_edge(e, PulseStyle::default()));
         }
         assert!(!s.pulse_edge(e, PulseStyle::default()));
+    }
+
+    #[test]
+    fn pulse_limit_is_configurable_and_can_replace_oldest() {
+        let (mut s, a, b) = two_nodes();
+        let e = s.connect(a, b, ()).unwrap();
+        s.max_pulses_per_edge = 2;
+        s.pulse_overflow = PulseOverflow::ReplaceOldest;
+        for i in 0..3 {
+            let style = PulseStyle {
+                label: Some(i.to_string()),
+                ..Default::default()
+            };
+            assert!(s.pulse_edge(e, style));
+        }
+        assert_eq!(s.pulses.len(), 2);
+        assert_eq!(s.pulses[0].style.label.as_deref(), Some("1"));
+        assert!(s.pulse_edge_reverse(e, PulseStyle::default()));
+        assert_eq!(s.pulses[1].style.direction, PulseDirection::Reverse);
     }
 
     #[test]
