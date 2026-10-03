@@ -215,6 +215,14 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 
 CI runs all of these on Linux, and the library tests on Windows and macOS too.
 
+### Releasing
+
+1. Bump `version` in `Cargo.toml` and add a dated `## [x.y.z] - YYYY-MM-DD` section (and link) to `CHANGELOG.md`; a test fails if they disagree.
+2. Merge to `main`.
+3. Publish: push the tag (`git tag -a vx.y.z -m "egui-flow x.y.z" && git push origin vx.y.z`), or open **Actions → Release → Run workflow** on `main` and enter `vx.y.z` to have it tag the commit for you.
+
+The Release workflow re-runs the checks, verifies the tag matches `Cargo.toml`, and creates the GitHub Release from the changelog.
+
 ## Animation
 
 Everything above that moves can be disabled at once with `FlowOptions { animate: false, .. }` (reduced motion): view transitions jump, nodes appear instantly and hover easing is skipped. Edges you marked `animated` and explicit `pulse_edge` calls are your own choice and keep running. Pulses are capped per edge (8 by default, see above) so a burst of events can't pile up.
