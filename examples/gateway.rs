@@ -72,6 +72,7 @@ pub struct App {
     pub state: FlowState<Data, ()>,
     pub editor: Editor<Data, ()>,
     pub highlight: bool,
+    pub crisp: bool,
     pub engine: NodeId,
     pub route: Vec<EdgeId>,
     pub brake_edge: EdgeId,
@@ -143,6 +144,7 @@ impl App {
             editor: Editor::new(&s),
             state: s,
             highlight: false,
+            crisp: true,
             engine,
             route: vec![e1, e3, e4, e5],
             brake_edge,
@@ -197,6 +199,7 @@ impl App {
                     self.send_frame(0.9, 1);
                 }
                 ui.checkbox(&mut self.highlight, "Highlight connected");
+                ui.checkbox(&mut self.crisp, "Crisp text");
                 ui.separator();
                 ui.label("Edges:");
                 for (kind, name) in [
@@ -241,6 +244,7 @@ impl App {
                 let opts = FlowOptions {
                     background: Background::Dots,
                     highlight_connected: self.highlight,
+                    crisp_text: self.crisp,
                     alignment_guides: true,
                     minimap: true,
                     fit_view_on_init: true,

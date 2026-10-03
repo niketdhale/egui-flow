@@ -7,6 +7,11 @@ All notable changes to egui-flow are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Crisp text when zoomed** (`FlowOptions::crisp_text`, on by default; `Flow::crisp_text`). The canvas is
+  drawn into a scaled layer, so text used to be the 1x raster stretched by the zoom and went soft
+  above 1x. Text is now laid out again at the zoomed font size and shrunk back, so glyphs are
+  rasterised at (almost exactly) their on-screen size. The scale is quantised to eighth-octave steps
+  to avoid filling the glyph atlas while zooming, so text is stretched by at most about 4%.
 - `FlowOptions::handle_visibility` (`HandleVisibility::{Always, OnHover, Hidden}`): hide the
   connection dots on nodes. `OnHover` fades them in near the node, while it is selected or dragged,
   and while a connection is being dragged; `Hidden` never draws them and disables

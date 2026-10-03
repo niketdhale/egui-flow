@@ -31,6 +31,7 @@
 //! }
 //! ```
 
+mod crisp;
 mod editor;
 mod events;
 mod geometry;

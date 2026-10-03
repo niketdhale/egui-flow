@@ -48,6 +48,7 @@ Painter-drawn, so they need no font and never render as empty boxes.
 
 | React Flow | egui-flow |
 |---|---|
+| Crisp text when zoomed | `FlowOptions::crisp_text` (on by default) re-lays out text at the zoomed size instead of stretching the 1x raster; the `gateway` example has a "Crisp text" checkbox to compare |
 | Pan / zoom viewport | drag background or middle mouse to pan, wheel / pinch to zoom (zoom-to-cursor), `fit_view()` |
 | Custom nodes | implement `FlowViewer::node_ui` with any egui widgets |
 | Handles | `FlowViewer::handles` — any number per node, on any side, source or target |
@@ -233,7 +234,7 @@ Everything above that moves can be disabled at once with `FlowOptions { animate:
 
 ## Notes
 
-* Content scales with zoom by rasterising at 1× and transforming, so text is soft when zoomed in far (same as `egui::Scene`).
+* Zooming scales the node content with a layer transform. Text is laid out again at the zoomed size (`crisp_text`) so it stays sharp; other painted content, such as images, is scaled as usual.
 * Selectable labels are disabled inside nodes so dragging on text moves the node; re-enable in `node_ui` if needed.
 * Resizing sets a size; it does not make node content scale.
 * No node exit animation (removed nodes vanish immediately) or per-edge dash patterns.

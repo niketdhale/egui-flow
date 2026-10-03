@@ -74,6 +74,12 @@ impl Flow {
         self
     }
 
+    /// Re-lay out text at the zoomed size so it stays sharp (default on).
+    pub fn crisp_text(mut self, on: bool) -> Self {
+        self.opts.crisp_text = on;
+        self
+    }
+
     pub fn edge_kind(mut self, kind: EdgeKind) -> Self {
         self.opts.default_edge_kind = kind;
         self
@@ -1125,6 +1131,10 @@ impl Flow {
             events.push(FlowEvent::ViewportChanged(state.viewport));
         }
 
+        if o.crisp_text {
+            crate::crisp::crisp_text(ui.ctx(), layer_id, tf.scaling);
+        }
+
         FlowResponse {
             pane,
             nodes: node_resps,
@@ -1735,6 +1745,63 @@ mod tests {
         }
         assert!(!painted(&last));
         assert!((s2.node(b2).unwrap().position.y - (top + 4.0)).abs() < 1.5);
+    }
+
+    /// Lay one labelled node out at `zoom` and return the label's layout font size
+    /// and its on-screen width.
+    fn label_at_zoom(zoom: f32, crisp: bool) -> (f32, f32, Color32) {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        s.add_node(pos2(40.0, 40.0), "hello world");
+        s.viewport.zoom = zoom;
+        let opts = FlowOptions {
+            minimap: false,
+            controls: false,
+            crisp_text: crisp,
+            ..Default::default()
+        };
+        let mut shapes = Vec::new();
+        for _ in 0..4 {
+            shapes = run_full(&ctx, &mut s, vec![], None, opts.clone()).1;
+        }
+        let t = text_shape(&shapes, "hello world").expect("node text drawn");
+        let f = &t.galley.job.sections[0].format;
+        (f.font_id.size, t.galley.rect.width(), f.color)
+    }
+
+    #[test]
+    fn zoomed_text_is_laid_out_at_the_zoomed_size_and_lands_at_the_same_screen_size() {
+        let (base_size, base_width, _) = label_at_zoom(1.0, true);
+        for zoom in [2.0_f32, 3.0, 0.5] {
+            let (size, width, _) = label_at_zoom(zoom, true);
+            let want = base_size * crate::crisp::text_scale(zoom);
+            assert!(
+                (size - want).abs() < 0.01,
+                "zoom {zoom}: layout size {size}, want {want}"
+            );
+            // On screen it is `zoom` times the 1x width, whichever way it was laid out.
+            let ratio = width / base_width;
+            assert!(
+                (ratio - zoom).abs() / zoom < 0.04,
+                "zoom {zoom}: width ratio {ratio}"
+            );
+        }
+    }
+
+    #[test]
+    fn text_is_left_alone_at_zoom_one_and_when_crisp_text_is_off() {
+        let (base, _, _) = label_at_zoom(1.0, true);
+        assert_eq!(label_at_zoom(1.0, false).0, base);
+        // Off: the 1x layout is simply stretched.
+        assert_eq!(label_at_zoom(2.0, false).0, base);
+        assert!(label_at_zoom(2.0, true).0 > base * 1.9);
+    }
+
+    #[test]
+    fn crisp_text_keeps_the_text_colour() {
+        let (_, _, plain) = label_at_zoom(2.0, false);
+        let (_, _, crisp) = label_at_zoom(2.0, true);
+        assert_eq!(plain, crisp);
     }
 
     #[test]
