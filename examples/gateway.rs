@@ -100,6 +100,8 @@ impl App {
         let gw = add(&mut s, Role::Gateway, "Gateway", 380.0, 120.0);
         let can2 = add(&mut s, Role::Bus, "CAN2", 590.0, 120.0);
         let dash = add(&mut s, Role::Ecu, "Dashboard", 770.0, 120.0);
+        // Not wired up yet: drag from its right handle onto a bus to connect it.
+        let diag = add(&mut s, Role::Ecu, "Diag tool", 0.0, 330.0);
 
         let wire = |s: &mut FlowState<Data, ()>, a, b, kind| {
             let id = s.connect(a, b, ()).unwrap();
@@ -151,6 +153,7 @@ impl App {
                 ("gw", gw),
                 ("can2", can2),
                 ("dash", dash),
+                ("diag", diag),
             ],
             arrived: 0,
             canvas: egui::Rect::NOTHING,
@@ -166,7 +169,7 @@ impl App {
                 duration,
                 shape: PulseShape::Arrow,
                 color: Some(Color32::from_rgb(255, 190, 60)),
-                radius: 5.0,
+                radius: 6.5,
                 label: Some("0x1A0 RPM".into()),
                 tag,
                 ..Default::default()
@@ -195,11 +198,41 @@ impl App {
                 }
                 ui.checkbox(&mut self.highlight, "Highlight connected");
                 ui.separator();
+                ui.label("Edges:");
+                for (kind, name) in [
+                    (EdgeKind::Bezier, "Bezier"),
+                    (EdgeKind::Straight, "Straight"),
+                    (EdgeKind::Step, "Step"),
+                    (EdgeKind::SmoothStep, "Smooth"),
+                ] {
+                    let current = self.state.edges.iter().all(|e| e.kind == Some(kind));
+                    if ui.selectable_label(current, name).clicked() {
+                        self.state
+                            .edges
+                            .iter_mut()
+                            .for_each(|e| e.kind = Some(kind));
+                    }
+                }
+                ui.label("Line:");
+                for (style, name) in [
+                    (LineStyle::Solid, "Solid"),
+                    (LineStyle::Dashed, "Dashed"),
+                    (LineStyle::Dotted, "Dotted"),
+                ] {
+                    let current = self.state.edges.iter().all(|e| e.line_style == style);
+                    if ui.selectable_label(current, name).clicked() {
+                        self.state
+                            .edges
+                            .iter_mut()
+                            .for_each(|e| e.line_style = style);
+                    }
+                }
+                ui.separator();
                 ui.label(format!("frames delivered: {}", self.arrived));
             });
         });
         egui::TopBottomPanel::bottom("log").show(ctx, |ui| {
-            ui.label(&self.log);
+            ui.strong(&self.log);
         });
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -209,6 +242,7 @@ impl App {
                     background: Background::Dots,
                     highlight_connected: self.highlight,
                     alignment_guides: true,
+                    minimap: true,
                     fit_view_on_init: true,
                     ..Default::default()
                 };
@@ -218,6 +252,15 @@ impl App {
                 self.editor.process(&mut self.state, &out.events);
                 for event in out.events {
                     match event {
+                        // Style edges drawn by hand like the ones built in `new`.
+                        FlowEvent::Connected(id) => {
+                            if let Some(e) = self.state.edge_mut(id) {
+                                e.kind = Some(EdgeKind::SmoothStep);
+                                e.arrow = true;
+                                e.color = Some(Color32::from_rgb(150, 150, 170));
+                            }
+                            self.log = "connected".into();
+                        }
                         FlowEvent::Reconnected { new, .. } => {
                             self.log = format!("edge now runs {:?} -> {:?}", new.source, new.target)
                         }

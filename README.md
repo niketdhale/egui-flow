@@ -7,11 +7,41 @@
 
 A [React Flow](https://reactflow.dev/)-style node-graph canvas for [egui](https://github.com/emilk/egui), in pure Rust.
 
+![A CAN-gateway graph built with egui-flow: styled edge labels, arrowheads, dashed links and a two-way link](docs/media/overview.png)
+
 ```sh
 cargo run --example basic   # node graph canvas
-cargo run --example gateway # CAN-gateway demo: reconnect, route pulses, highlight
+cargo run --example gateway # the CAN-gateway demo from the tour below
 cargo run --example icons   # built-in icon gallery
 ```
+
+## Feature tour
+
+One continuous take through the whole library, recorded from the real app ([`examples/gateway`](examples/gateway.rs)):
+
+![A 50-second tour of egui-flow: pan and zoom, drag with alignment guides, connect, reconnect, edge and line styles, route pulses, resize, nudge, highlight, box select, copy and paste, undo and redo, delete](docs/media/tour.gif)
+
+In order, with where to look:
+
+| Caption | What it is |
+|---|---|
+| Pan and zoom | drag the background, wheel or pinch; `fit_view_animated` |
+| Drag nodes, alignment guides | `FlowOptions::alignment_guides`; Ctrl+Z undoes the move |
+| Connect | drag from one handle to another, with live validation and snapping |
+| Reconnect | select an edge and drag the ring on its end; `FlowEvent::Reconnected` |
+| Edge types, line styles | `EdgeKind::{Bezier, Straight, Step, SmoothStep}`, `LineStyle::{Solid, Dashed, Dotted}`, arrowheads, labels |
+| Route pulses | `state.pulse_route(..)`; shapes, trails, arrival events |
+| Resize | corner and edge grips on a selected node |
+| Nudge | arrow keys move the selection (Shift: 10 units) |
+| Highlight connected | `FlowOptions::highlight_connected` |
+| Box select | Shift-drag |
+| Copy, paste, undo, redo | `Editor`; Ctrl/Cmd+C, V, Z, Shift+Z |
+| Delete | removes the selection and its edges |
+
+### Icons
+Painter-drawn, so they need no font and never render as empty boxes.
+
+![The built-in icons: check, close, plus, minus, chevrons, triangles and arrows](docs/media/icons.png)
 
 ## Features
 
