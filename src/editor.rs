@@ -1,5 +1,7 @@
 //! Undo/redo history and a clipboard, driven by the canvas's events.
 
+use std::collections::HashMap;
+
 use egui::{Vec2, vec2};
 
 use crate::events::FlowEvent;
@@ -19,9 +21,24 @@ impl<N: Clone, E: Clone> Snapshot<N, E> {
         }
     }
 
+    /// Restore the snapshot. Items that exist both now and in the snapshot keep
+    /// their current selection, so undo never changes what you have selected;
+    /// items it brings back keep the selection they had.
     fn apply(&self, state: &mut FlowState<N, E>) {
+        let node_sel: HashMap<_, _> = state.nodes.iter().map(|n| (n.id, n.selected)).collect();
+        let edge_sel: HashMap<_, _> = state.edges.iter().map(|e| (e.id, e.selected)).collect();
         state.nodes = self.nodes.clone();
         state.edges = self.edges.clone();
+        for n in &mut state.nodes {
+            if let Some(&sel) = node_sel.get(&n.id) {
+                n.selected = sel;
+            }
+        }
+        for e in &mut state.edges {
+            if let Some(&sel) = edge_sel.get(&e.id) {
+                e.selected = sel;
+            }
+        }
     }
 }
 
@@ -208,6 +225,50 @@ mod tests {
         assert!(ed.redo(&mut s));
         assert_eq!(s.nodes.len(), 3);
         assert!(!ed.redo(&mut s));
+    }
+
+    #[test]
+    fn undo_and_redo_leave_the_current_selection_alone() {
+        let mut s = state();
+        let a = s.nodes[0].id;
+        let b = s.add_node(pos2(100.0, 0.0), "b");
+        let e = s.connect(a, b, ()).unwrap();
+        s.node_mut(a).unwrap().selected = true;
+        let mut ed = Editor::new(&s); // snapshot: a selected
+        s.nodes[0].position = pos2(5.0, 5.0);
+        ed.commit(&s);
+
+        // Select something else, then undo the move.
+        s.clear_selection();
+        s.node_mut(b).unwrap().selected = true;
+        s.edge_mut(e).unwrap().selected = true;
+        assert!(ed.undo(&mut s));
+        assert_eq!(
+            s.node(a).unwrap().position,
+            pos2(0.0, 0.0),
+            "the move was undone"
+        );
+        assert!(!s.node(a).unwrap().selected, "a stays deselected");
+        assert!(s.node(b).unwrap().selected && s.edge(e).unwrap().selected);
+        assert!(ed.redo(&mut s));
+        assert!(s.node(b).unwrap().selected && !s.node(a).unwrap().selected);
+    }
+
+    #[test]
+    fn undoing_a_delete_brings_the_node_back_with_its_old_selection() {
+        let mut s = state();
+        let a = s.nodes[0].id;
+        s.node_mut(a).unwrap().selected = true;
+        let mut ed = Editor::new(&s);
+        s.delete_selected();
+        ed.commit(&s);
+        assert!(s.nodes.is_empty());
+        assert!(ed.undo(&mut s));
+        assert_eq!(s.nodes.len(), 1);
+        assert!(
+            s.node(a).unwrap().selected,
+            "restored node is selected again"
+        );
     }
 
     #[test]

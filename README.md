@@ -11,43 +11,32 @@ A [React Flow](https://reactflow.dev/)-style node-graph canvas for [egui](https:
 
 ```sh
 cargo run --example basic   # node graph canvas
-cargo run --example gateway # CAN-gateway demo: reconnect, route pulses, highlight
+cargo run --example gateway # the CAN-gateway demo from the tour below
 cargo run --example icons   # built-in icon gallery
 ```
 
 ## Feature tour
 
-Everything below is from [`examples/gateway`](examples/gateway.rs), recorded from the real app.
+One continuous take through the whole library, recorded from the real app ([`examples/gateway`](examples/gateway.rs)):
 
-### Reconnect edges
-Select an edge, then drag the ring on either end to another handle. It snaps back if you drop it on nothing.
+![A 50-second tour of egui-flow: pan and zoom, drag with alignment guides, connect, reconnect, edge and line styles, route pulses, resize, nudge, highlight, box select, copy and paste, undo and redo, delete](docs/media/tour.gif)
 
-![Dragging the end of an edge from CAN1 to CAN2](docs/media/reconnect.gif)
+In order, with where to look:
 
-### Route pulses
-`state.pulse_route(start, &[edges..], style)` animates a frame along a multi-hop route, leg by leg, picking forward or reverse for each edge. Pulses can have a shape, a trail, a hover label and an arrival event.
-
-![An arrow-shaped pulse travelling Engine to CAN1 to Gateway to CAN2 to Dashboard](docs/media/pulse.gif)
-
-### Resize nodes
-Selected nodes get grips on the corner and the right and bottom edges. Handles and edges follow.
-
-![Dragging a node's corner to make the Gateway node larger](docs/media/resize.gif)
-
-### Alignment guides
-With `FlowOptions::alignment_guides`, dragged nodes snap to other nodes' edges and centres, with guide lines.
-
-![Dragging Dashboard until it snaps to CAN2's left edge and Brake's top edge](docs/media/guides.gif)
-
-### Undo, redo, copy and paste
-`Editor` records history from the canvas events and handles Ctrl/Cmd+Z, Shift+Z, C, X, V and D.
-
-![Copying CAN1 and Gateway, pasting twice, then undoing and redoing](docs/media/editing.gif)
-
-### Highlight connected
-`FlowOptions::highlight_connected` dims everything not connected to the selected or hovered node.
-
-![Selecting nodes one after another with unrelated nodes and edges dimmed](docs/media/highlight.gif)
+| Caption | What it is |
+|---|---|
+| Pan and zoom | drag the background, wheel or pinch; `fit_view_animated` |
+| Drag nodes, alignment guides | `FlowOptions::alignment_guides`; Ctrl+Z undoes the move |
+| Connect | drag from one handle to another, with live validation and snapping |
+| Reconnect | select an edge and drag the ring on its end; `FlowEvent::Reconnected` |
+| Edge types, line styles | `EdgeKind::{Bezier, Straight, Step, SmoothStep}`, `LineStyle::{Solid, Dashed, Dotted}`, arrowheads, labels |
+| Route pulses | `state.pulse_route(..)`; shapes, trails, arrival events |
+| Resize | corner and edge grips on a selected node |
+| Nudge | arrow keys move the selection (Shift: 10 units) |
+| Highlight connected | `FlowOptions::highlight_connected` |
+| Box select | Shift-drag |
+| Copy, paste, undo, redo | `Editor`; Ctrl/Cmd+C, V, Z, Shift+Z |
+| Delete | removes the selection and its edges |
 
 ### Icons
 Painter-drawn, so they need no font and never render as empty boxes.
