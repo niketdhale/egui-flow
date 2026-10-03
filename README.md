@@ -83,10 +83,10 @@ egui-flow is not on crates.io yet; depend on a tagged release from GitHub:
 
 ```toml
 [dependencies]
-egui-flow = { git = "https://github.com/niketdhale/egui-flow", tag = "v1.0.0" }
+egui-flow = { git = "https://github.com/niketdhale/egui-flow", tag = "v0.1.0" }
 ```
 
-It targets egui 0.33. Releases follow [Semantic Versioning](https://semver.org/); see the [changelog](CHANGELOG.md) and the [releases page](https://github.com/niketdhale/egui-flow/releases).
+It targets egui 0.33. Releases follow [Semantic Versioning](https://semver.org/) (below 1.0, a minor release may include breaking changes); see the [changelog](CHANGELOG.md) and the [releases page](https://github.com/niketdhale/egui-flow/releases).
 
 ## Usage
 
@@ -222,6 +222,8 @@ CI runs all of these on Linux, and the library tests on Windows and macOS too.
 3. Publish: push the tag (`git tag -a vx.y.z -m "egui-flow x.y.z" && git push origin vx.y.z`), or open **Actions → Release → Run workflow** on `main` and enter `vx.y.z` to have it tag the commit for you.
 
 The Release workflow re-runs the checks, verifies the tag matches `Cargo.toml`, and creates the GitHub Release from the changelog.
+
+If a release was cut with the wrong version, **Actions → Delete release → Run workflow** on `main` removes the release and its tag (type the tag twice to confirm); then release again with the right one.
 
 ## Animation
 
