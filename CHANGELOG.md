@@ -4,6 +4,16 @@ All notable changes to egui-flow are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- `FlowOptions::handle_visibility` (`HandleVisibility::{Always, OnHover, Hidden}`): hide the
+  connection dots on nodes. `OnHover` fades them in near the node, while it is selected or dragged,
+  and while a connection is being dragged; `Hidden` never draws them and disables
+  drag-to-connect. The default, `Always`, keeps the previous behaviour.
+- Tests that one handle accepts any number of wires (as source and as target) and that exact
+  duplicates are still rejected.
+
 ## [0.1.0] - 2026-10-03
 
 First release. egui-flow is a [React Flow](https://reactflow.dev/)-style node-graph canvas for
