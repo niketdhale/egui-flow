@@ -166,7 +166,7 @@ impl App {
                 duration,
                 shape: PulseShape::Arrow,
                 color: Some(Color32::from_rgb(255, 190, 60)),
-                radius: 5.0,
+                radius: 6.5,
                 label: Some("0x1A0 RPM".into()),
                 tag,
                 ..Default::default()

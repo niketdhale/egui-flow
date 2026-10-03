@@ -7,11 +7,52 @@
 
 A [React Flow](https://reactflow.dev/)-style node-graph canvas for [egui](https://github.com/emilk/egui), in pure Rust.
 
+![A CAN-gateway graph built with egui-flow: styled edge labels, arrowheads, dashed links and a two-way link](docs/media/overview.png)
+
 ```sh
 cargo run --example basic   # node graph canvas
 cargo run --example gateway # CAN-gateway demo: reconnect, route pulses, highlight
 cargo run --example icons   # built-in icon gallery
 ```
+
+## Feature tour
+
+Everything below is from [`examples/gateway`](examples/gateway.rs), recorded from the real app.
+
+### Reconnect edges
+Select an edge, then drag the ring on either end to another handle. It snaps back if you drop it on nothing.
+
+![Dragging the end of an edge from CAN1 to CAN2](docs/media/reconnect.gif)
+
+### Route pulses
+`state.pulse_route(start, &[edges..], style)` animates a frame along a multi-hop route, leg by leg, picking forward or reverse for each edge. Pulses can have a shape, a trail, a hover label and an arrival event.
+
+![An arrow-shaped pulse travelling Engine to CAN1 to Gateway to CAN2 to Dashboard](docs/media/pulse.gif)
+
+### Resize nodes
+Selected nodes get grips on the corner and the right and bottom edges. Handles and edges follow.
+
+![Dragging a node's corner to make the Gateway node larger](docs/media/resize.gif)
+
+### Alignment guides
+With `FlowOptions::alignment_guides`, dragged nodes snap to other nodes' edges and centres, with guide lines.
+
+![Dragging Dashboard until it snaps to CAN2's left edge and Brake's top edge](docs/media/guides.gif)
+
+### Undo, redo, copy and paste
+`Editor` records history from the canvas events and handles Ctrl/Cmd+Z, Shift+Z, C, X, V and D.
+
+![Copying CAN1 and Gateway, pasting twice, then undoing and redoing](docs/media/editing.gif)
+
+### Highlight connected
+`FlowOptions::highlight_connected` dims everything not connected to the selected or hovered node.
+
+![Selecting nodes one after another with unrelated nodes and edges dimmed](docs/media/highlight.gif)
+
+### Icons
+Painter-drawn, so they need no font and never render as empty boxes.
+
+![The built-in icons: check, close, plus, minus, chevrons, triangles and arrows](docs/media/icons.png)
 
 ## Features
 
