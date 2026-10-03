@@ -400,17 +400,26 @@ impl Flow {
                 target_width
             };
             let stroke = Stroke::new(width, color);
-            if e.animated {
-                // Dash period is 6 + 4; wrapping keeps f32 precise on long runs.
-                let offset = (now * e.animation_speed as f64).rem_euclid(10.0) as f32;
+            let pattern = match (e.line_style.pattern(width), e.animated) {
+                (None, true) => LineStyle::Dashed.pattern(width),
+                (p, _) => p,
+            };
+            if let Some((dash, gap)) = pattern {
+                let offset = if e.animated {
+                    // Wrapping keeps f32 precise on long runs.
+                    ui.ctx().request_repaint();
+                    let period = (dash + gap) as f64;
+                    (now * e.animation_speed as f64).rem_euclid(period) as f32
+                } else {
+                    0.0
+                };
                 cp.extend(Shape::dashed_line_with_offset(
                     path,
                     stroke,
-                    &[6.0],
-                    &[4.0],
+                    &[dash],
+                    &[gap],
                     -offset,
                 ));
-                ui.ctx().request_repaint();
             } else {
                 cp.add(Shape::line(path.clone(), stroke));
             }

@@ -199,6 +199,7 @@ impl<N, E> FlowState<N, E> {
             data,
             kind: None,
             label: None,
+            line_style: LineStyle::Solid,
             animated: false,
             arrow: false,
             color: None,

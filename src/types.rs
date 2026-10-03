@@ -111,6 +111,34 @@ impl Handle {
     }
 }
 
+/// Stroke pattern of an edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum LineStyle {
+    /// A continuous line.
+    #[default]
+    Solid,
+    /// Short dashes.
+    Dashed,
+    /// Dots, sized to the line width.
+    Dotted,
+    /// Custom dash and gap lengths in flow units.
+    Custom { dash: f32, gap: f32 },
+}
+
+impl LineStyle {
+    /// `(dash, gap)` lengths for a line of `width`, or `None` when solid.
+    pub fn pattern(self, width: f32) -> Option<(f32, f32)> {
+        let w = width.max(1.0);
+        match self {
+            LineStyle::Solid => None,
+            LineStyle::Dashed => Some((6.0, 4.0)),
+            LineStyle::Dotted => Some((w, 2.0 * w + 2.0)),
+            LineStyle::Custom { dash, gap } => Some((dash.max(0.5), gap.max(0.5))),
+        }
+    }
+}
+
 /// How an edge is routed between its two handles.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -176,7 +204,9 @@ pub struct Edge<D> {
     /// Overrides the canvas default routing.
     pub kind: Option<EdgeKind>,
     pub label: Option<String>,
-    /// Draw marching dashes.
+    /// Stroke pattern (solid, dashed, dotted, custom).
+    pub line_style: LineStyle,
+    /// Draw marching dashes. Uses `line_style`'s pattern, or dashes if solid.
     pub animated: bool,
     /// Draw an arrowhead at the target.
     pub arrow: bool,
@@ -250,5 +280,26 @@ impl Viewport {
         let flow = self.to_flow(anchor);
         self.zoom = new_zoom;
         self.pan = anchor.to_vec2() - flow.to_vec2() * new_zoom;
+    }
+}
+
+#[cfg(test)]
+mod line_style_tests {
+    use super::*;
+
+    #[test]
+    fn line_style_patterns() {
+        assert_eq!(LineStyle::Solid.pattern(2.0), None);
+        assert_eq!(LineStyle::Dashed.pattern(2.0), Some((6.0, 4.0)));
+        let (dash, gap) = LineStyle::Dotted.pattern(2.0).unwrap();
+        assert!(dash <= 2.0 && gap > dash, "dots are short with wider gaps");
+        assert_eq!(
+            LineStyle::Custom {
+                dash: 0.0,
+                gap: 3.0
+            }
+            .pattern(1.0),
+            Some((0.5, 3.0))
+        );
     }
 }

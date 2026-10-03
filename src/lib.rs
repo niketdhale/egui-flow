@@ -6,7 +6,8 @@
 //! * pan (drag the background / middle mouse) and zoom (wheel, pinch)
 //! * draggable nodes with arbitrary egui content
 //! * connectable handles with live validation and snapping
-//! * bezier / straight / step / smooth-step edges, labels, arrows, animation
+//! * bezier / straight / step / smooth-step edges, labels, arrows, animation,
+//!   per-edge colour, width and line style (solid, dashed, dotted, custom)
 //! * click, shift-click and box (shift-drag) selection, Delete to remove
 //! * dots / lines / cross background, minimap, zoom controls
 //! * animated dashed edges, travelling pulses, eased view transitions, node fade-in

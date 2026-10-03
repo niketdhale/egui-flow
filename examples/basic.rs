@@ -3,7 +3,7 @@
 use egui::{Color32, Ui};
 use egui_flow::{
     Background, EdgeKind, Flow, FlowEvent, FlowOptions, FlowState, FlowViewer, Handle, HandleId,
-    Node, PulseStyle, Side,
+    LineStyle, Node, PulseStyle, Side,
 };
 
 enum Kind {
@@ -58,6 +58,8 @@ impl FlowViewer<Data, ()> for Viewer {
 struct App {
     state: FlowState<Data, ()>,
     kind: EdgeKind,
+    line: LineStyle,
+    color: Color32,
     animate: bool,
     log: Vec<String>,
 }
@@ -92,6 +94,8 @@ impl App {
         Self {
             state,
             kind: EdgeKind::Bezier,
+            line: LineStyle::Solid,
+            color: Color32::from_rgb(120, 120, 200),
             animate: true,
             log: Vec::new(),
         }
@@ -110,6 +114,23 @@ impl eframe::App for App {
                     (EdgeKind::SmoothStep, "Smooth step"),
                 ] {
                     ui.selectable_value(&mut self.kind, k, name);
+                }
+                ui.separator();
+                ui.label("Line:");
+                let before = (self.line, self.color);
+                for (l, name) in [
+                    (LineStyle::Solid, "Solid"),
+                    (LineStyle::Dashed, "Dashed"),
+                    (LineStyle::Dotted, "Dotted"),
+                ] {
+                    ui.selectable_value(&mut self.line, l, name);
+                }
+                ui.color_edit_button_srgba(&mut self.color);
+                if before != (self.line, self.color) {
+                    for e in &mut self.state.edges {
+                        e.line_style = self.line;
+                        e.color = Some(self.color);
+                    }
                 }
                 ui.separator();
                 if ui.button("Send pulse").clicked() {

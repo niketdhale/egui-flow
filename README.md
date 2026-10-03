@@ -21,6 +21,7 @@ cargo run --example icons   # built-in icon gallery
 | Handles | `FlowViewer::handles` — any number per node, on any side, source or target |
 | Connecting | drag handle → handle, snapping, live validation (`can_connect`), `Esc` cancels |
 | Edge types | `Bezier`, `Straight`, `Step`, `SmoothStep`; labels, arrowheads, per-edge `color` / `width` |
+| Line style and colour | `edge.line_style = LineStyle::{Solid, Dashed, Dotted, Custom { dash, gap }}`, `edge.color`, `edge.width`; `EdgeKind::Straight` for a direct line |
 | Animated edges | `edge.animated = true` marches dashes (`animation_speed`, negative reverses) |
 | Icons | built-in `Icon` set (check, close, plus, minus, chevrons, triangles, arrows) via `icon(ui, Icon::Check, 14.0)` / `icon_button(..)`; painter-drawn, so no font, SVG or asset is needed and they follow the text colour |
 | Particles along edges | `state.pulse_edge(id, PulseStyle::default())` sends a dot source → target |
