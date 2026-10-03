@@ -11,7 +11,9 @@ use egui::{
 };
 
 use crate::events::{FlowEvent, FlowResponse};
-use crate::geometry::{dist_to_path, edge_path, end_direction, path_midpoint, point_at};
+use crate::geometry::{
+    align_to, dist_to_path, edge_path, end_direction, point_at, start_direction,
+};
 use crate::options::{Background, FlowOptions};
 use crate::state::{ConnectDrag, FlowState, NodeDrag, PulseDirection, PulseShape, ResizeDrag};
 use crate::types::*;
@@ -295,16 +297,48 @@ impl Flow {
                 && let Some(d) = &mut state.interaction.node_drag
             {
                 d.accum += r.drag_delta();
-                for (oid, origin) in &d.origins {
-                    if let Some(n) = state.nodes.iter_mut().find(|n| n.id == *oid) {
-                        n.position = snap(*origin + d.accum, o.snap_to_grid);
-                        dragged.push(*oid);
+                let proposed: Vec<(NodeId, Pos2)> = d
+                    .origins
+                    .iter()
+                    .map(|(oid, origin)| (*oid, snap(*origin + d.accum, o.snap_to_grid)))
+                    .collect();
+                let mut offset = Vec2::ZERO;
+                let mut guides = Vec::new();
+                if o.alignment_guides {
+                    let moving: HashSet<NodeId> = proposed.iter().map(|(i, _)| *i).collect();
+                    let group = proposed
+                        .iter()
+                        .filter_map(|(i, p)| {
+                            state
+                                .nodes
+                                .iter()
+                                .find(|n| n.id == *i)
+                                .map(|n| Rect::from_min_size(*p, n.size))
+                        })
+                        .reduce(|a, b| a.union(b));
+                    let others: Vec<Rect> = state
+                        .nodes
+                        .iter()
+                        .filter(|n| !moving.contains(&n.id))
+                        .map(|n| n.rect())
+                        .collect();
+                    if let Some(group) = group {
+                        let threshold = o.guide_threshold / state.viewport.zoom.max(1e-3);
+                        (offset, guides) = align_to(group, &others, threshold);
+                    }
+                }
+                state.interaction.guides = guides;
+                for (oid, pos) in proposed {
+                    if let Some(n) = state.nodes.iter_mut().find(|n| n.id == oid) {
+                        n.position = pos + offset;
+                        dragged.push(oid);
                     }
                 }
             }
             if r.drag_stopped()
                 && let Some(d) = state.interaction.node_drag.take()
             {
+                state.interaction.guides.clear();
                 stopped.extend(d.origins.iter().map(|(id, _)| *id));
             }
         }
@@ -490,29 +524,29 @@ impl Flow {
                 cp.add(Shape::line(path.clone(), stroke));
             }
             if e.arrow {
-                let tip = *path.last().unwrap();
-                let dir = end_direction(path);
-                let normal = vec2(-dir.y, dir.x);
-                let base = tip - dir * 10.0;
-                cp.add(Shape::convex_polygon(
-                    vec![tip, base + normal * 5.0, base - normal * 5.0],
+                draw_arrow(
+                    &cp,
+                    *path.last().unwrap(),
+                    end_direction(path),
                     color,
-                    Stroke::NONE,
-                ));
+                    e.arrow_style,
+                );
+            }
+            if e.arrow_at_source {
+                draw_arrow(&cp, path[0], -start_direction(path), color, e.arrow_style);
             }
             if let Some(label) = e.label.as_ref().filter(|_| !edge_dim[*i]) {
-                let galley = cp.layout_no_wrap(
-                    label.clone(),
-                    FontId::proportional(12.0),
-                    visuals.text_color(),
-                );
-                let mid = path_midpoint(path);
+                let ls = e.label_style;
+                let text_color = ls.color.unwrap_or(visuals.text_color());
+                let galley =
+                    cp.layout_no_wrap(label.clone(), FontId::proportional(ls.size), text_color);
+                let at = point_at(path, ls.position);
                 cp.rect_filled(
-                    Rect::from_center_size(mid, galley.size() + vec2(8.0, 4.0)),
+                    Rect::from_center_size(at, galley.size() + vec2(8.0, 4.0)),
                     3.0,
-                    visuals.window_fill,
+                    ls.background.unwrap_or(visuals.window_fill),
                 );
-                cp.galley(mid - galley.size() / 2.0, galley, visuals.text_color());
+                cp.galley(at - galley.size() / 2.0, galley, text_color);
             }
         }
 
@@ -939,6 +973,22 @@ impl Flow {
             }
         }
 
+        // --- alignment guides while dragging --------------------------------
+        for g in &state.interaction.guides {
+            let (a, b) = if g.vertical {
+                (pos2(g.at, g.from), pos2(g.at, g.to))
+            } else {
+                (pos2(g.from, g.at), pos2(g.to, g.at))
+            };
+            cp.line_segment(
+                [a, b],
+                Stroke::new(
+                    1.0 / state.viewport.zoom.max(1e-3),
+                    Color32::from_rgb(255, 90, 160),
+                ),
+            );
+        }
+
         // --- box selection --------------------------------------------------
         if let (Some(start), Some(cur)) = (state.interaction.box_select, pointer_scene(&tf)) {
             let r = Rect::from_two_pos(start, cur);
@@ -962,6 +1012,40 @@ impl Flow {
             let (nodes, edges) = state.delete_selected();
             if !nodes.is_empty() || !edges.is_empty() {
                 events.push(FlowEvent::Deleted { nodes, edges });
+            }
+        }
+
+        if o.keyboard_nudge
+            && hover.is_some()
+            && !ui.ctx().wants_keyboard_input()
+            && state.nodes.iter().any(|n| n.selected && n.draggable)
+            && o.nodes_draggable
+        {
+            use egui::Modifiers as M;
+            let delta = ui.input_mut(|i| {
+                let mut d = Vec2::ZERO;
+                for (key, dir) in [
+                    (Key::ArrowLeft, vec2(-1.0, 0.0)),
+                    (Key::ArrowRight, vec2(1.0, 0.0)),
+                    (Key::ArrowUp, vec2(0.0, -1.0)),
+                    (Key::ArrowDown, vec2(0.0, 1.0)),
+                ] {
+                    if i.consume_key(M::SHIFT, key) {
+                        d += dir * 10.0;
+                    } else if i.consume_key(M::NONE, key) {
+                        d += dir;
+                    }
+                }
+                d
+            });
+            if delta != Vec2::ZERO {
+                let mut ids = Vec::new();
+                for n in state.nodes.iter_mut().filter(|n| n.selected && n.draggable) {
+                    n.position += delta;
+                    ids.push(n.id);
+                }
+                events.push(FlowEvent::NodesDragged(ids.clone()));
+                events.push(FlowEvent::NodesDragStopped(ids));
             }
         }
 
@@ -1019,6 +1103,41 @@ impl Flow {
             pane,
             nodes: node_resps,
             events,
+        }
+    }
+}
+
+fn draw_arrow(cp: &Painter, tip: Pos2, dir: Vec2, color: Color32, style: ArrowStyle) {
+    let normal = vec2(-dir.y, dir.x);
+    match style {
+        ArrowStyle::Triangle => {
+            let base = tip - dir * 10.0;
+            cp.add(Shape::convex_polygon(
+                vec![tip, base + normal * 5.0, base - normal * 5.0],
+                color,
+                Stroke::NONE,
+            ));
+        }
+        ArrowStyle::Open => {
+            let base = tip - dir * 9.0;
+            let stroke = Stroke::new(1.8_f32, color);
+            cp.line_segment([base + normal * 5.0, tip], stroke);
+            cp.line_segment([base - normal * 5.0, tip], stroke);
+        }
+        ArrowStyle::Circle => {
+            cp.circle_filled(tip - dir * 4.0, 4.0, color);
+        }
+        ArrowStyle::Diamond => {
+            cp.add(Shape::convex_polygon(
+                vec![
+                    tip,
+                    tip - dir * 7.0 + normal * 4.5,
+                    tip - dir * 14.0,
+                    tip - dir * 7.0 - normal * 4.5,
+                ],
+                color,
+                Stroke::NONE,
+            ));
         }
     }
 }
@@ -1298,6 +1417,22 @@ mod tests {
         time: Option<f64>,
         animate: bool,
     ) -> Vec<FlowEvent<&'static str, ()>> {
+        let opts = FlowOptions {
+            minimap: true,
+            fit_view_on_init: fit,
+            animate,
+            ..Default::default()
+        };
+        run_frame_with(ctx, state, events, time, opts)
+    }
+
+    fn run_frame_with(
+        ctx: &Context,
+        state: &mut FlowState<&'static str, ()>,
+        events: Vec<Event>,
+        time: Option<f64>,
+        opts: FlowOptions,
+    ) -> Vec<FlowEvent<&'static str, ()>> {
         let mut out = Vec::new();
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
@@ -1309,12 +1444,7 @@ mod tests {
             egui::CentralPanel::default()
                 .frame(Frame::NONE)
                 .show(ctx, |ui| {
-                    let opts = FlowOptions {
-                        minimap: true,
-                        fit_view_on_init: fit,
-                        animate,
-                        ..Default::default()
-                    };
+                    let opts = opts.clone();
                     out = Flow::new("t").options(opts).show(ui, state, &mut V).events;
                 });
         });
@@ -1581,6 +1711,104 @@ mod tests {
             assert!(hit.is_some(), "shortcut {want}: {out:?}");
             assert_eq!(out.len(), 1, "exactly one request: {out:?}");
         }
+    }
+
+    #[test]
+    fn arrow_keys_nudge_selected_nodes() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(100.0, 100.0), "a");
+        let b = s.add_node(pos2(300.0, 100.0), "b");
+        s.node_mut(a).unwrap().selected = true;
+        for _ in 0..2 {
+            run_frame(
+                &ctx,
+                &mut s,
+                vec![Event::PointerMoved(pos2(600.0, 400.0))],
+                false,
+            );
+        }
+        let key = |key, modifiers| Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        let out = run_frame(
+            &ctx,
+            &mut s,
+            vec![key(egui::Key::ArrowRight, egui::Modifiers::NONE)],
+            false,
+        );
+        assert_eq!(s.node(a).unwrap().position, pos2(101.0, 100.0));
+        assert!(
+            out.iter()
+                .any(|e| matches!(e, FlowEvent::NodesDragStopped(ids) if ids == &[a]))
+        );
+        run_frame(
+            &ctx,
+            &mut s,
+            vec![key(egui::Key::ArrowDown, egui::Modifiers::SHIFT)],
+            false,
+        );
+        assert_eq!(s.node(a).unwrap().position, pos2(101.0, 110.0));
+        assert_eq!(
+            s.node(b).unwrap().position,
+            pos2(300.0, 100.0),
+            "unselected stays"
+        );
+    }
+
+    #[test]
+    fn dragging_near_another_node_snaps_to_its_edge() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(50.0, 100.0), "a");
+        let b = s.add_node(pos2(400.0, 250.0), "b");
+        let opts = FlowOptions {
+            alignment_guides: true,
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            run_frame_with(&ctx, &mut s, vec![], None, opts.clone());
+        }
+        let top = s.node(a).unwrap().position.y;
+        let grab = s.node(b).unwrap().rect().center();
+        let btn = |pos, pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        run_frame_with(
+            &ctx,
+            &mut s,
+            vec![Event::PointerMoved(grab)],
+            None,
+            opts.clone(),
+        );
+        run_frame_with(&ctx, &mut s, vec![btn(grab, true)], None, opts.clone());
+        // Move so b's top lands 4 units below a's top: inside the 6px threshold.
+        let to = grab + vec2(-20.0, top + 4.0 - 250.0);
+        for i in 1..=6 {
+            let p = grab + (to - grab) * (i as f32 / 6.0);
+            run_frame_with(
+                &ctx,
+                &mut s,
+                vec![Event::PointerMoved(p)],
+                None,
+                opts.clone(),
+            );
+        }
+        assert_eq!(
+            s.node(b).unwrap().position.y,
+            top,
+            "snapped onto a's top edge"
+        );
+        assert!(!s.interaction.guides.is_empty(), "guide line is shown");
+        run_frame_with(&ctx, &mut s, vec![btn(to, false)], None, opts);
+        assert!(s.interaction.guides.is_empty(), "guides clear on release");
     }
 
     #[test]

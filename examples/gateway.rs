@@ -5,12 +5,13 @@
 //! * "Send frame" animates ECU → bus → gateway → bus → ECU as one route
 //! * select a node and drag its corner or edges to resize it
 //! * Ctrl/Cmd+Z / Shift+Z undo and redo, Ctrl/Cmd+C / V / X / D copy, paste, cut, duplicate
+//! * drag a node near another to see alignment guides; arrow keys nudge selected nodes
 //! * "Highlight connected" dims everything unrelated to the selected/hovered node
 
 use egui::{Color32, Ui};
 use egui_flow::{
-    Background, EdgeId, EdgeKind, Editor, Flow, FlowEvent, FlowOptions, FlowState, FlowViewer,
-    Handle, LineStyle, Node, NodeId, PulseShape, PulseStyle, Side,
+    ArrowStyle, Background, EdgeId, EdgeKind, Editor, Flow, FlowEvent, FlowOptions, FlowState,
+    FlowViewer, Handle, LineStyle, Node, NodeId, PulseShape, PulseStyle, Side,
 };
 
 #[derive(Clone, Copy, PartialEq)]
@@ -115,6 +116,26 @@ impl App {
         let e5 = wire(&mut s, can2, dash, EdgeKind::Straight);
         s.edge_mut(e3).unwrap().line_style = LineStyle::Dashed;
         s.edge_mut(e4).unwrap().line_style = LineStyle::Dashed;
+        // Arrowhead shapes, a two-way link and styled, positioned labels.
+        s.edge_mut(e1).unwrap().arrow_style = ArrowStyle::Open;
+        s.edge_mut(brake_edge).unwrap().arrow_style = ArrowStyle::Circle;
+        s.edge_mut(e3).unwrap().arrow_style = ArrowStyle::Diamond;
+        let two_way = s.edge_mut(e5).unwrap();
+        two_way.arrow_at_source = true;
+        for (id, text, pos, color) in [
+            (e3, "500 kbit/s", 0.5, Color32::from_rgb(230, 180, 70)),
+            (e4, "filtered", 0.5, Color32::from_rgb(120, 190, 255)),
+            (e1, "RPM", 0.7, Color32::from_rgb(140, 200, 140)),
+        ] {
+            let e = s.edge_mut(id).unwrap();
+            e.label = Some(text.into());
+            e.label_style = egui_flow::EdgeLabelStyle {
+                position: pos,
+                size: 11.0,
+                color: Some(color),
+                background: Some(Color32::from_rgb(28, 28, 34)),
+            };
+        }
         s.fit_view();
         Self {
             editor: Editor::new(&s),
@@ -187,6 +208,7 @@ impl App {
                 let opts = FlowOptions {
                     background: Background::Dots,
                     highlight_connected: self.highlight,
+                    alignment_guides: true,
                     fit_view_on_init: true,
                     ..Default::default()
                 };
