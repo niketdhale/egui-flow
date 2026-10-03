@@ -14,7 +14,7 @@ use crate::events::{FlowEvent, FlowResponse};
 use crate::geometry::{
     align_to, dist_to_path, edge_path, end_direction, point_at, start_direction,
 };
-use crate::options::{Background, FlowOptions};
+use crate::options::{Background, FlowOptions, HandleVisibility};
 use crate::state::{ConnectDrag, FlowState, NodeDrag, PulseDirection, PulseShape, ResizeDrag};
 use crate::types::*;
 use crate::viewer::FlowViewer;
@@ -767,7 +767,29 @@ impl Flow {
             .map(|c| (c.node, c.handle));
         let mut all_handles: Vec<(NodeId, Handle, Pos2)> = Vec::new();
         for n in &state.nodes {
-            let connectable = o.nodes_connectable && n.connectable;
+            let connectable = o.nodes_connectable
+                && n.connectable
+                && o.handle_visibility != HandleVisibility::Hidden;
+            let show_handles = match o.handle_visibility {
+                HandleVisibility::Always => true,
+                HandleVisibility::Hidden => false,
+                HandleVisibility::OnHover => {
+                    let near = pointer_flow
+                        .is_some_and(|p| rects[&n.id].expand(HANDLE_RADIUS + 10.0).contains(p));
+                    near || n.selected
+                        || connecting.is_some()
+                        || state.interaction.node_drag.is_some()
+                }
+            };
+            let visibility = if o.animate {
+                ui.ctx().animate_value_with_time(
+                    id.with(("handle_visibility", n.id)),
+                    f32::from(show_handles),
+                    HOVER_EASE_SECS,
+                )
+            } else {
+                f32::from(show_handles)
+            };
             for h in handles.get(&n.id).into_iter().flatten() {
                 let pos = h.position(rects[&n.id]);
                 all_handles.push((n.id, *h, pos));
@@ -807,7 +829,11 @@ impl Flow {
                     target_r
                 };
                 let alpha = alphas.get(&n.id).copied().unwrap_or(1.0)
-                    * if node_dim(n.id) { DIM } else { 1.0 };
+                    * if node_dim(n.id) { DIM } else { 1.0 }
+                    * visibility;
+                if alpha < 0.01 {
+                    continue;
+                }
                 let fill = if active || valid_target {
                     sel_color
                 } else {
@@ -2261,5 +2287,135 @@ mod tests {
         assert!(s.appear.contains_key(&late));
         run_frame_at(&ctx, &mut s, vec![], false, Some(2.0), true);
         assert!(s.appear.is_empty(), "fade finished");
+    }
+
+    fn run_frame_opts(
+        ctx: &Context,
+        state: &mut FlowState<&'static str, ()>,
+        events: Vec<Event>,
+        opts: FlowOptions,
+        time: Option<f64>,
+    ) -> Vec<FlowEvent<&'static str, ()>> {
+        run_frame_with(ctx, state, events, time, opts)
+    }
+
+    /// Drag from `from` to `to` with the primary button, one frame per step.
+    fn drag_between(
+        ctx: &Context,
+        s: &mut FlowState<&'static str, ()>,
+        opts: &FlowOptions,
+        from: Pos2,
+        to: Pos2,
+    ) {
+        let btn = |pos, pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let mut frame = |events| run_frame_opts(ctx, s, events, opts.clone(), None);
+        frame(vec![Event::PointerMoved(from)]);
+        frame(vec![btn(from, true)]);
+        for i in 1..=6 {
+            frame(vec![Event::PointerMoved(
+                from + (to - from) * (i as f32 / 6.0),
+            )]);
+        }
+        frame(vec![btn(to, false)]);
+        frame(vec![]);
+    }
+
+    fn handle_pos(s: &FlowState<&'static str, ()>, node: NodeId, h: Handle) -> Pos2 {
+        h.position(s.node(node).unwrap().rect())
+    }
+
+    #[test]
+    fn one_handle_can_have_many_connections() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(50.0, 100.0), "a");
+        let b = s.add_node(pos2(400.0, 50.0), "b");
+        let c = s.add_node(pos2(400.0, 300.0), "c");
+        let opts = FlowOptions::default();
+        for _ in 0..3 {
+            run_frame_opts(&ctx, &mut s, vec![], opts.clone(), None);
+        }
+        let src = Handle::source(Handle::DEFAULT_SOURCE, Side::Right);
+        let tgt = Handle::target(Handle::DEFAULT_TARGET, Side::Left);
+        for to in [b, c] {
+            let (from_p, to_p) = (handle_pos(&s, a, src), handle_pos(&s, to, tgt));
+            drag_between(&ctx, &mut s, &opts, from_p, to_p);
+        }
+        assert_eq!(s.edges.len(), 2, "both wires leave the same source handle");
+        // A second wire between the same pair is rejected as a duplicate.
+        let (from_p, to_p) = (handle_pos(&s, a, src), handle_pos(&s, b, tgt));
+        drag_between(&ctx, &mut s, &opts, from_p, to_p);
+        assert_eq!(s.edges.len(), 2);
+    }
+
+    #[test]
+    fn many_wires_can_share_one_target_handle() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(50.0, 50.0), "a");
+        let b = s.add_node(pos2(50.0, 300.0), "b");
+        let c = s.add_node(pos2(450.0, 150.0), "c");
+        let opts = FlowOptions::default();
+        for _ in 0..3 {
+            run_frame_opts(&ctx, &mut s, vec![], opts.clone(), None);
+        }
+        let src = Handle::source(Handle::DEFAULT_SOURCE, Side::Right);
+        let tgt = Handle::target(Handle::DEFAULT_TARGET, Side::Left);
+        for from in [a, b] {
+            let (from_p, to_p) = (handle_pos(&s, from, src), handle_pos(&s, c, tgt));
+            drag_between(&ctx, &mut s, &opts, from_p, to_p);
+        }
+        assert_eq!(s.edges.len(), 2);
+        assert!(s.edges.iter().all(|e| e.target == c));
+    }
+
+    #[test]
+    fn hidden_handles_cannot_start_a_connection() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(50.0, 100.0), "a");
+        let b = s.add_node(pos2(400.0, 100.0), "b");
+        let opts = FlowOptions {
+            handle_visibility: HandleVisibility::Hidden,
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            run_frame_opts(&ctx, &mut s, vec![], opts.clone(), None);
+        }
+        let src = Handle::source(Handle::DEFAULT_SOURCE, Side::Right);
+        let tgt = Handle::target(Handle::DEFAULT_TARGET, Side::Left);
+        let (from_p, to_p) = (handle_pos(&s, a, src), handle_pos(&s, b, tgt));
+        drag_between(&ctx, &mut s, &opts, from_p, to_p);
+        assert!(s.edges.is_empty());
+        // Code can still create the edge, and it still renders without panicking.
+        s.connect(a, b, ());
+        run_frame_opts(&ctx, &mut s, vec![], opts, None);
+        assert_eq!(s.edges.len(), 1);
+    }
+
+    #[test]
+    fn on_hover_handles_still_connect() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(50.0, 100.0), "a");
+        let b = s.add_node(pos2(400.0, 100.0), "b");
+        let opts = FlowOptions {
+            handle_visibility: HandleVisibility::OnHover,
+            animate: false,
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            run_frame_opts(&ctx, &mut s, vec![], opts.clone(), None);
+        }
+        let src = Handle::source(Handle::DEFAULT_SOURCE, Side::Right);
+        let tgt = Handle::target(Handle::DEFAULT_TARGET, Side::Left);
+        let (from_p, to_p) = (handle_pos(&s, a, src), handle_pos(&s, b, tgt));
+        drag_between(&ctx, &mut s, &opts, from_p, to_p);
+        assert_eq!(s.edges.len(), 1);
     }
 }

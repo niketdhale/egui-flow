@@ -12,6 +12,20 @@ pub enum Background {
     Cross,
 }
 
+/// When the connection dots on nodes are drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HandleVisibility {
+    /// Always visible (React Flow's behaviour).
+    #[default]
+    Always,
+    /// Fade in while the pointer is near the node, the node is selected or a
+    /// connection is being dragged. Edges still attach at the same points.
+    OnHover,
+    /// Never drawn, and connecting by dragging is unavailable. Existing edges
+    /// still render and can be created from code.
+    Hidden,
+}
+
 /// Behaviour switches for [`Flow`](crate::Flow). Every field has a sensible
 /// default, so override with struct-update syntax:
 /// `FlowOptions { minimap: true, ..Default::default() }`.
@@ -32,6 +46,8 @@ pub struct FlowOptions {
     pub default_edge_kind: EdgeKind,
     pub nodes_draggable: bool,
     pub nodes_connectable: bool,
+    /// When to draw the connection dots on nodes.
+    pub handle_visibility: HandleVisibility,
     pub elements_selectable: bool,
     /// Delete/Backspace removes the selection.
     pub delete_key: bool,
@@ -81,6 +97,7 @@ impl Default for FlowOptions {
             default_edge_kind: EdgeKind::Bezier,
             nodes_draggable: true,
             nodes_connectable: true,
+            handle_visibility: HandleVisibility::Always,
             elements_selectable: true,
             delete_key: true,
             allow_self_loops: false,
