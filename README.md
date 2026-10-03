@@ -52,6 +52,8 @@ Painter-drawn, so they need no font and never render as empty boxes.
 | Custom nodes | implement `FlowViewer::node_ui` with any egui widgets |
 | Handles | `FlowViewer::handles` — any number per node, on any side, source or target |
 | Connecting | drag handle → handle, snapping, live validation (`can_connect`), `Esc` cancels |
+| Many connections | a handle takes any number of wires; only exact duplicates are rejected |
+| Hiding handles | `FlowOptions::handle_visibility`: `Always`, `OnHover` (fade in near the node, when selected or while connecting) or `Hidden` |
 | Edge types | `Bezier`, `Straight`, `Step`, `SmoothStep`; labels, arrowheads, per-edge `color` / `width` |
 | Arrowheads | `edge.arrow = true` with `edge.arrow_style = ArrowStyle::{Triangle, Open, Circle, Diamond}`; `edge.arrow_at_source = true` for two-way links |
 | Edge labels | `edge.label` plus `edge.label_style = EdgeLabelStyle { position, size, color, background }`; `position` runs 0.0 (source) to 1.0 (target) |
