@@ -35,6 +35,7 @@ mod crisp;
 mod editor;
 mod events;
 mod geometry;
+mod groups;
 mod icons;
 mod options;
 mod state;

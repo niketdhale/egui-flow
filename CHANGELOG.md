@@ -7,6 +7,17 @@ All notable changes to egui-flow are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Groups** (sub-flows): `Node::{parent, is_group, collapsed}` and `Node::{group, in_group}`. A node's
+  `position` is relative to its group; groups nest. `FlowState::{add_group, set_parent, children,
+  descendants, ancestors, depth, abs_position, abs_rect, set_collapsed, fit_group, group_selected,
+  ungroup, hidden_nodes, is_hidden, collapse_proxy}`.
+  On the canvas: groups draw behind their members, only the header grabs (so the rest of an open
+  group still pans and box-selects), a header toggle collapses a group (`FlowEvent::GroupToggled`;
+  edges to hidden members attach to the group, edges wholly inside it are not drawn), dropping a
+  node on or off a group changes its membership (`FlowEvent::ParentChanged`,
+  `FlowOptions::group_drop`), and dragging, nudging, copying and deleting a group take its members
+  along. `FlowOptions::group_header_height`. `Editor` records both events, so they undo.
+  A box select picks an open group only when the box covers all of it.
 - **Crisp text when zoomed** (`FlowOptions::crisp_text`, on by default; `Flow::crisp_text`). The canvas is
   drawn into a scaled layer, so text used to be the 1x raster stretched by the zoom and went soft
   above 1x. Text is now laid out again at the zoomed font size and shrunk back, so glyphs are
@@ -18,6 +29,20 @@ All notable changes to egui-flow are documented here. The format follows
   drag-to-connect. The default, `Always`, keeps the previous behaviour.
 - Tests that one handle accepts any number of wires (as source and as target) and that exact
   duplicates are still rejected.
+
+### Changed
+- `FlowState::bounds` is in flow space whatever group a node is in, and ignores members of collapsed
+  groups. `FlowResponse::nodes` lists only visible nodes.
+- `FlowState::remove_node` on a group moves its members up a level, in place; `delete_selected` on a
+  group deletes its deletable members too (`ungroup` first to keep them).
+- Copying a group copies its members; pasting remaps their membership. A copied member whose group is
+  not copied is pasted at the top level, where it was.
+- While `Flow::show` runs, positions are in flow space (they are group-relative again when it returns).
+  Only code that reads `node.position` inside `FlowViewer` callbacks for a node in a group can notice.
+
+### Fixed
+- A Shift-drag box select started a few pixels after the press (where the drag was noticed); it now
+  starts exactly where the button went down.
 
 ## [0.1.0] - 2026-10-03
 

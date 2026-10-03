@@ -14,6 +14,7 @@ use crate::events::{FlowEvent, FlowResponse};
 use crate::geometry::{
     align_to, dist_to_path, edge_path, end_direction, point_at, start_direction,
 };
+use crate::icons::Icon;
 use crate::options::{Background, FlowOptions, HandleVisibility};
 use crate::state::{ConnectDrag, FlowState, NodeDrag, PulseDirection, PulseShape, ResizeDrag};
 use crate::types::*;
@@ -23,6 +24,7 @@ use crate::viewer::FlowViewer;
 /// constrain further.
 const MAX_NODE_WIDTH: f32 = 400.0;
 const HANDLE_RADIUS: f32 = 5.0;
+const GROUP_TOGGLE: f32 = 20.0;
 const EDGE_HIT_PX: f32 = 8.0;
 const NODE_FADE_SECS: f64 = 0.25;
 const HOVER_EASE_SECS: f32 = 0.12;
@@ -101,6 +103,11 @@ impl Flow {
 
         let now = ui.input(|i| i.time);
         let first_frame = !state.initialized;
+        // Inside a frame every position is in flow space; `unflatten` restores
+        // group-relative positions before returning.
+        state.flatten();
+        state.sort_by_depth();
+        let hidden = state.hidden_nodes();
 
         // --- fit view ------------------------------------------------------
         if o.fit_view_on_init && first_frame {
@@ -225,7 +232,11 @@ impl Flow {
         };
 
         if pane.drag_started_by(PointerButton::Primary) && shift && o.elements_selectable {
-            state.interaction.box_select = pointer_scene(&tf);
+            // From where the button went down, not where the drag was noticed a few pixels on.
+            state.interaction.box_select = ui
+                .input(|i| i.pointer.press_origin())
+                .map(|p| tf.inverse() * p)
+                .or_else(|| pointer_scene(&tf));
         }
         if pane.dragged()
             && state.interaction.box_select.is_none()
@@ -260,10 +271,16 @@ impl Flow {
         let node_resps: Vec<(NodeId, Response)> = state
             .nodes
             .iter()
+            .filter(|n| !hidden.contains(&n.id))
             .map(|n| {
+                let mut grab = n.rect();
+                if n.is_group && !n.collapsed {
+                    // Only the header: the rest of an open group pans and box-selects.
+                    grab.max.y = (grab.min.y + o.group_header_height).min(grab.max.y);
+                }
                 (
                     n.id,
-                    cui.interact(n.rect(), id.with(("node", n.id)), Sense::click_and_drag()),
+                    cui.interact(grab, id.with(("node", n.id)), Sense::click_and_drag()),
                 )
             })
             .collect();
@@ -286,14 +303,30 @@ impl Flow {
                     select_node(state, *nid, shift);
                 }
                 if o.nodes_draggable && state.nodes[idx].draggable {
+                    let roots: Vec<NodeId> = state
+                        .nodes
+                        .iter()
+                        .filter(|n| n.selected && n.draggable && !hidden.contains(&n.id))
+                        .map(|n| n.id)
+                        .collect();
+                    // A dragged group takes its members with it.
+                    let mut moving = roots.clone();
+                    for r in &roots {
+                        for d in state.descendants(*r) {
+                            if !moving.contains(&d) {
+                                moving.push(d);
+                            }
+                        }
+                    }
                     let origins = state
                         .nodes
                         .iter()
-                        .filter(|n| n.selected && n.draggable)
+                        .filter(|n| moving.contains(&n.id))
                         .map(|n| (n.id, n.position))
                         .collect();
                     state.interaction.node_drag = Some(NodeDrag {
                         origins,
+                        roots,
                         accum: Vec2::ZERO,
                     });
                 }
@@ -325,7 +358,7 @@ impl Flow {
                     let others: Vec<Rect> = state
                         .nodes
                         .iter()
-                        .filter(|n| !moving.contains(&n.id))
+                        .filter(|n| !moving.contains(&n.id) && !hidden.contains(&n.id))
                         .map(|n| n.rect())
                         .collect();
                     if let Some(group) = group {
@@ -346,6 +379,44 @@ impl Flow {
             {
                 state.interaction.guides.clear();
                 stopped.extend(d.origins.iter().map(|(id, _)| *id));
+                if o.group_drop {
+                    // Dropping on a group puts the node in it; dropping outside takes it out.
+                    let moving: HashSet<NodeId> = d.origins.iter().map(|(i, _)| *i).collect();
+                    let tops: Vec<NodeId> = d
+                        .roots
+                        .iter()
+                        .copied()
+                        .filter(|r| !state.ancestors(*r).iter().any(|a| d.roots.contains(a)))
+                        .collect();
+                    for root in tops {
+                        let Some(centre) = state.node(root).map(|n| n.rect().center()) else {
+                            continue;
+                        };
+                        let target = state
+                            .nodes
+                            .iter()
+                            .filter(|g| {
+                                g.is_group
+                                    && !g.collapsed
+                                    && !moving.contains(&g.id)
+                                    && !hidden.contains(&g.id)
+                                    && g.rect().contains(centre)
+                            })
+                            .max_by_key(|g| state.depth(g.id))
+                            .map(|g| g.id);
+                        let current = state.node(root).and_then(|n| n.parent);
+                        if target != current {
+                            // Positions are in flow space here, so nothing moves on screen.
+                            if let Some(n) = state.node_mut(root) {
+                                n.parent = target;
+                            }
+                            events.push(FlowEvent::ParentChanged {
+                                node: root,
+                                parent: target,
+                            });
+                        }
+                    }
+                }
             }
         }
         if !dragged.is_empty() {
@@ -359,6 +430,8 @@ impl Flow {
         {
             let n = state.nodes.remove(i);
             state.nodes.push(n);
+            // Groups stay below their members.
+            state.sort_by_depth();
         }
 
         // --- highlight: dim whatever isn't connected to the focus ----------
@@ -415,16 +488,28 @@ impl Flow {
             .iter()
             .enumerate()
             .filter_map(|(i, e)| {
-                let sh = find_handle(&handles, e.source, e.source_handle)?;
-                let th = find_handle(&handles, e.target, e.target_handle)?;
-                let path = edge_path(
-                    e.kind.unwrap_or(o.default_edge_kind),
-                    sh.position(*rects.get(&e.source)?),
-                    sh.side,
-                    th.position(*rects.get(&e.target)?),
-                    th.side,
-                );
-                Some((i, path, th.side))
+                // An end inside a collapsed group attaches to that group's side instead.
+                let anchor = |node: NodeId, handle: HandleId, is_source: bool| {
+                    if hidden.contains(&node) {
+                        let r = rects.get(&state.collapse_proxy(node))?;
+                        return Some(if is_source {
+                            (r.right_center(), Side::Right)
+                        } else {
+                            (r.left_center(), Side::Left)
+                        });
+                    }
+                    let h = find_handle(&handles, node, handle)?;
+                    Some((h.position(*rects.get(&node)?), h.side))
+                };
+                if (hidden.contains(&e.source) || hidden.contains(&e.target))
+                    && state.collapse_proxy(e.source) == state.collapse_proxy(e.target)
+                {
+                    return None; // wholly inside one collapsed group
+                }
+                let (sp, ss) = anchor(e.source, e.source_handle, true)?;
+                let (tp, ts) = anchor(e.target, e.target_handle, false)?;
+                let path = edge_path(e.kind.unwrap_or(o.default_edge_kind), sp, ss, tp, ts);
+                Some((i, path, ts))
             })
             .collect();
 
@@ -630,10 +715,19 @@ impl Flow {
         }
 
         // --- pass 2b: node contents ----------------------------------------
+        let mut toggles: Vec<(NodeId, bool)> = Vec::new();
         for i in 0..state.nodes.len() {
+            if hidden.contains(&state.nodes[i].id) {
+                continue;
+            }
             let node = &mut state.nodes[i];
             let frame = viewer.node_frame(&cui, node);
-            let fixed = node.fixed_size;
+            // A collapsed group shrinks to its header.
+            let fixed = if node.collapsed {
+                None
+            } else {
+                node.fixed_size
+            };
             let content_w = fixed.map_or(MAX_NODE_WIDTH, |f| f.x.max(MAX_NODE_WIDTH));
             let content = Rect::from_min_size(node.position, vec2(content_w, 10_000.0));
             let margin = frame.total_margin().sum();
@@ -661,6 +755,31 @@ impl Flow {
             );
             let rect = inner.inner.response.rect;
             node.size = rect.size();
+            if node.is_group {
+                // Collapse / expand toggle in the header's top-right corner.
+                let toggle = Rect::from_min_size(
+                    pos2(rect.max.x - GROUP_TOGGLE - 6.0, rect.min.y + 5.0),
+                    Vec2::splat(GROUP_TOGGLE),
+                );
+                let tr = cui.interact(toggle, id.with(("group_toggle", node.id)), Sense::click());
+                let alpha = alphas.get(&node.id).copied().unwrap_or(1.0);
+                if tr.hovered() {
+                    cp.rect_filled(
+                        toggle,
+                        4.0,
+                        visuals.widgets.hovered.bg_fill.gamma_multiply(alpha),
+                    );
+                }
+                let (icon, tint) = if node.collapsed {
+                    (Icon::ChevronRight, visuals.text_color())
+                } else {
+                    (Icon::ChevronDown, visuals.weak_text_color())
+                };
+                icon.paint(&cp, toggle.shrink(4.0), tint.gamma_multiply(alpha));
+                if tr.clicked() {
+                    toggles.push((node.id, node.collapsed));
+                }
+            }
             if node.selected {
                 cp.rect_stroke(
                     rect,
@@ -674,10 +793,22 @@ impl Flow {
             }
         }
 
+        for (group, was_collapsed) in toggles {
+            state.set_collapsed(group, !was_collapsed);
+            events.push(FlowEvent::GroupToggled {
+                node: group,
+                collapsed: !was_collapsed,
+            });
+        }
+
         // --- resize grips on selected nodes (below handles, which win overlaps)
         if o.nodes_resizable {
             let mut resized: Vec<(NodeId, Vec2, bool)> = Vec::new();
-            for n in state.nodes.iter_mut().filter(|n| n.selected && n.resizable) {
+            for n in state
+                .nodes
+                .iter_mut()
+                .filter(|n| n.selected && n.resizable && !n.collapsed && !hidden.contains(&n.id))
+            {
                 let r = n.rect();
                 let c = 14.0;
                 let zones = [
@@ -772,7 +903,7 @@ impl Flow {
             .as_ref()
             .map(|c| (c.node, c.handle));
         let mut all_handles: Vec<(NodeId, Handle, Pos2)> = Vec::new();
-        for n in &state.nodes {
+        for n in state.nodes.iter().filter(|n| !hidden.contains(&n.id)) {
             let connectable = o.nodes_connectable
                 && n.connectable
                 && o.handle_visibility != HandleVisibility::Hidden;
@@ -1030,7 +1161,14 @@ impl Flow {
                 state.interaction.box_select = None;
                 state.clear_selection();
                 for n in &mut state.nodes {
-                    n.selected = r.intersects(n.rect());
+                    n.selected = !hidden.contains(&n.id)
+                        && if n.is_group {
+                            // An open group is only picked when the box covers all of it,
+                            // so a box drawn inside it selects its members instead.
+                            r.contains_rect(n.rect())
+                        } else {
+                            r.intersects(n.rect())
+                        };
                 }
             }
         }
@@ -1071,10 +1209,23 @@ impl Flow {
                 d
             });
             if delta != Vec2::ZERO {
-                let mut ids = Vec::new();
-                for n in state.nodes.iter_mut().filter(|n| n.selected && n.draggable) {
+                let ids: Vec<NodeId> = state
+                    .nodes
+                    .iter()
+                    .filter(|n| n.selected && n.draggable && !hidden.contains(&n.id))
+                    .map(|n| n.id)
+                    .collect();
+                // A nudged group takes its members with it.
+                let mut moving = ids.clone();
+                for r in &ids {
+                    for d in state.descendants(*r) {
+                        if !moving.contains(&d) {
+                            moving.push(d);
+                        }
+                    }
+                }
+                for n in state.nodes.iter_mut().filter(|n| moving.contains(&n.id)) {
                     n.position += delta;
-                    ids.push(n.id);
                 }
                 events.push(FlowEvent::NodesDragged(ids.clone()));
                 events.push(FlowEvent::NodesDragStopped(ids));
@@ -1130,6 +1281,8 @@ impl Flow {
         if state.viewport != viewport_before {
             events.push(FlowEvent::ViewportChanged(state.viewport));
         }
+
+        state.unflatten();
 
         if o.crisp_text {
             crate::crisp::crisp_text(ui.ctx(), layer_id, tf.scaling);
@@ -1372,6 +1525,7 @@ fn minimap<N, E, V: FlowViewer<N, E>>(
     accent: Color32,
 ) {
     const SIZE: Vec2 = vec2(160.0, 110.0);
+    let hidden_nodes = state.hidden_nodes();
     Area::new(id.with("minimap"))
         .order(Order::Foreground)
         .movable(false)
@@ -1401,7 +1555,7 @@ fn minimap<N, E, V: FlowViewer<N, E>>(
             let to_mini = |p: Pos2| rect.center() + (p - bounds.center()) * scale;
             let to_rect = |r: Rect| Rect::from_min_max(to_mini(r.min), to_mini(r.max));
 
-            for n in &state.nodes {
+            for n in state.nodes.iter().filter(|n| !hidden_nodes.contains(&n.id)) {
                 let color = viewer
                     .minimap_color(n)
                     .unwrap_or_else(|| v.widgets.inactive.fg_stroke.color.gamma_multiply(0.6));
@@ -1480,11 +1634,23 @@ mod tests {
         time: Option<f64>,
         opts: FlowOptions,
     ) -> (Vec<FlowEvent<&'static str, ()>>, Vec<Shape>) {
+        run_full_mods(ctx, state, events, time, opts, egui::Modifiers::NONE)
+    }
+
+    fn run_full_mods(
+        ctx: &Context,
+        state: &mut FlowState<&'static str, ()>,
+        events: Vec<Event>,
+        time: Option<f64>,
+        opts: FlowOptions,
+        modifiers: egui::Modifiers,
+    ) -> (Vec<FlowEvent<&'static str, ()>>, Vec<Shape>) {
         let mut out = Vec::new();
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
             events,
             time,
+            modifiers,
             ..Default::default()
         };
         let full = ctx.run(input, |ctx| {
@@ -2200,6 +2366,457 @@ mod tests {
         assert!(!s.interaction.guides.is_empty(), "guide line is shown");
         run_frame_with(&ctx, &mut s, vec![btn(to, false)], None, opts);
         assert!(s.interaction.guides.is_empty(), "guides clear on release");
+    }
+
+    // ---- groups ---------------------------------------------------------------
+
+    struct Scene {
+        ctx: Context,
+        s: FlowState<&'static str, ()>,
+        group: NodeId,
+        child: NodeId,
+        outside: NodeId,
+    }
+
+    /// A 320x220 group at (100, 100) with one member, plus a node outside it.
+    fn group_scene() -> Scene {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let group = s.add_group(pos2(100.0, 100.0), vec2(320.0, 220.0), "group");
+        let child = s.add_node(pos2(20.0, 60.0), "child");
+        s.node_mut(child).unwrap().parent = Some(group);
+        let outside = s.add_node(pos2(560.0, 150.0), "outside");
+        for _ in 0..4 {
+            run_frame(&ctx, &mut s, vec![], false);
+        }
+        Scene {
+            ctx,
+            s,
+            group,
+            child,
+            outside,
+        }
+    }
+
+    fn centre(s: &FlowState<&'static str, ()>, n: NodeId) -> Pos2 {
+        s.abs_rect(n).unwrap().center()
+    }
+
+    /// A point on a group's header, clear of its title text and toggle.
+    fn header_point(s: &FlowState<&'static str, ()>, g: NodeId) -> Pos2 {
+        let r = s.abs_rect(g).unwrap();
+        pos2(r.center().x, r.min.y + 15.0)
+    }
+
+    fn near(a: Pos2, b: Pos2) -> bool {
+        (a - b).length() < 2.5
+    }
+
+    #[test]
+    fn dragging_a_groups_header_moves_its_members_with_it() {
+        let Scene {
+            ctx,
+            mut s,
+            group,
+            child,
+            outside,
+        } = group_scene();
+        let (g0, c0, o0) = (
+            s.abs_position(group).unwrap(),
+            s.abs_position(child).unwrap(),
+            s.abs_position(outside).unwrap(),
+        );
+        let rel0 = s.node(child).unwrap().position;
+        let from = header_point(&s, group);
+        drag(&ctx, &mut s, from, from + vec2(60.0, 40.0));
+        let d = vec2(60.0, 40.0);
+        assert!(
+            near(s.abs_position(group).unwrap(), g0 + d),
+            "{:?}",
+            s.abs_position(group)
+        );
+        assert!(
+            near(s.abs_position(child).unwrap(), c0 + d),
+            "member came along"
+        );
+        assert_eq!(
+            s.node(child).unwrap().position,
+            rel0,
+            "its position inside the group is unchanged"
+        );
+        assert_eq!(s.abs_position(outside), Some(o0));
+        // Groups stay below their members even after being brought to the front.
+        let order: Vec<_> = s.nodes.iter().map(|n| n.id).collect();
+        assert!(order.iter().position(|n| *n == group) < order.iter().position(|n| *n == child));
+    }
+
+    #[test]
+    fn dragging_a_member_inside_its_group_moves_only_the_member() {
+        let Scene {
+            ctx,
+            mut s,
+            group,
+            child,
+            ..
+        } = group_scene();
+        let (g0, rel0) = (
+            s.abs_position(group).unwrap(),
+            s.node(child).unwrap().position,
+        );
+        let from = centre(&s, child);
+        let events = drag(&ctx, &mut s, from, from + vec2(30.0, 20.0));
+        assert_eq!(s.abs_position(group), Some(g0));
+        let rel = s.node(child).unwrap().position;
+        assert!(
+            near(
+                rel.to_vec2().to_pos2(),
+                (rel0 + vec2(30.0, 20.0)).to_vec2().to_pos2()
+            ),
+            "{rel:?}"
+        );
+        assert_eq!(s.node(child).unwrap().parent, Some(group));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, FlowEvent::ParentChanged { .. })),
+            "still in the group: {events:?}"
+        );
+    }
+
+    #[test]
+    fn dropping_a_node_on_a_group_puts_it_in_the_group() {
+        let Scene {
+            ctx,
+            mut s,
+            group,
+            outside,
+            ..
+        } = group_scene();
+        let from = centre(&s, outside);
+        let target = pos2(300.0, 270.0); // inside the group, away from its member
+        let events = drag(&ctx, &mut s, from, target);
+        assert!(
+            events.iter().any(|e| matches!(e, FlowEvent::ParentChanged { node, parent: Some(g) } if *node == outside && *g == group)),
+            "{events:?}"
+        );
+        assert_eq!(s.node(outside).unwrap().parent, Some(group));
+        assert!(
+            near(centre(&s, outside), target),
+            "it stays where it was dropped: {:?}",
+            centre(&s, outside)
+        );
+        let rel = s.node(outside).unwrap().position;
+        assert!(near(
+            rel.to_vec2().to_pos2() + s.abs_position(group).unwrap().to_vec2(),
+            s.abs_position(outside).unwrap()
+        ));
+    }
+
+    #[test]
+    fn dragging_a_member_out_of_its_group_releases_it() {
+        let Scene {
+            ctx, mut s, child, ..
+        } = group_scene();
+        let from = centre(&s, child);
+        let target = pos2(700.0, 450.0);
+        let events = drag(&ctx, &mut s, from, target);
+        assert!(
+            events.iter().any(
+                |e| matches!(e, FlowEvent::ParentChanged { node, parent: None } if *node == child)
+            ),
+            "{events:?}"
+        );
+        assert_eq!(s.node(child).unwrap().parent, None);
+        assert!(near(centre(&s, child), target));
+    }
+
+    #[test]
+    fn group_drop_can_be_turned_off() {
+        let Scene {
+            ctx,
+            mut s,
+            outside,
+            ..
+        } = group_scene();
+        let opts = FlowOptions {
+            group_drop: false,
+            ..Default::default()
+        };
+        let from = centre(&s, outside);
+        let to = pos2(300.0, 270.0);
+        let btn = |pos, pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        run_frame_with(
+            &ctx,
+            &mut s,
+            vec![Event::PointerMoved(from)],
+            None,
+            opts.clone(),
+        );
+        run_frame_with(&ctx, &mut s, vec![btn(from, true)], None, opts.clone());
+        let mut events = Vec::new();
+        for i in 1..=6 {
+            let p = from + (to - from) * (i as f32 / 6.0);
+            events.extend(run_frame_with(
+                &ctx,
+                &mut s,
+                vec![Event::PointerMoved(p)],
+                None,
+                opts.clone(),
+            ));
+        }
+        events.extend(run_frame_with(
+            &ctx,
+            &mut s,
+            vec![btn(to, false)],
+            None,
+            opts,
+        ));
+        assert_eq!(s.node(outside).unwrap().parent, None);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, FlowEvent::ParentChanged { .. }))
+        );
+    }
+
+    /// Click the collapse toggle in the top-right of group `g`.
+    fn click_toggle(
+        ctx: &Context,
+        s: &mut FlowState<&'static str, ()>,
+        g: NodeId,
+    ) -> Vec<FlowEvent<&'static str, ()>> {
+        let r = s.abs_rect(g).unwrap();
+        let at = pos2(r.max.x - 16.0, r.min.y + 15.0);
+        let btn = |pressed| Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        run_frame(ctx, s, vec![Event::PointerMoved(at)], false);
+        run_frame(ctx, s, vec![btn(true)], false);
+        run_frame(ctx, s, vec![btn(false)], false)
+    }
+
+    #[test]
+    fn the_header_toggle_collapses_a_group_and_hides_its_members() {
+        let Scene {
+            ctx, mut s, group, ..
+        } = group_scene();
+        let opts = FlowOptions::default();
+        let shown = |s: &mut FlowState<&'static str, ()>| {
+            text_shape(&run_full(&ctx, s, vec![], None, opts.clone()).1, "child").is_some()
+        };
+        assert!(shown(&mut s), "member drawn while the group is open");
+        let events = click_toggle(&ctx, &mut s, group);
+        assert!(
+            events.iter().any(
+                |e| matches!(e, FlowEvent::GroupToggled { node, collapsed: true } if *node == group)
+            ),
+            "{events:?}"
+        );
+        assert!(s.node(group).unwrap().collapsed);
+        run_frame(&ctx, &mut s, vec![], false);
+        assert!(!shown(&mut s), "member hidden once collapsed");
+        // A collapsed group shrinks to its header.
+        assert!(
+            s.node(group).unwrap().size.y < 100.0,
+            "{:?}",
+            s.node(group).unwrap().size
+        );
+
+        // And back.
+        let events = click_toggle(&ctx, &mut s, group);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            FlowEvent::GroupToggled {
+                collapsed: false,
+                ..
+            }
+        )));
+        run_frame(&ctx, &mut s, vec![], false);
+        assert!(shown(&mut s));
+    }
+
+    #[test]
+    fn edges_to_hidden_members_attach_to_the_collapsed_group() {
+        let Scene {
+            ctx,
+            mut s,
+            group,
+            child,
+            outside,
+        } = group_scene();
+        let ink = Color32::from_rgb(1, 2, 3);
+        let e = s.connect(child, outside, ()).unwrap();
+        {
+            let edge = s.edge_mut(e).unwrap();
+            edge.kind = Some(EdgeKind::Straight);
+            edge.color = Some(ink);
+            edge.width = Some(3.0);
+        }
+        let opts = FlowOptions::default();
+        let edge_points = |shapes: &[Shape]| {
+            shapes.iter().find_map(|sh| match sh {
+                Shape::Path(p) if !p.closed && p.points.len() == 2 => match &p.stroke.color {
+                    egui::epaint::ColorMode::Solid(c) if *c == ink => {
+                        Some((p.points[0], p.points[1]))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+        };
+        for _ in 0..3 {
+            run_frame_with(&ctx, &mut s, vec![], None, opts.clone());
+        }
+        s.set_collapsed(group, true);
+        let mut shapes = Vec::new();
+        for _ in 0..4 {
+            shapes = run_full(&ctx, &mut s, vec![], None, opts.clone()).1;
+        }
+        let (start, end) = edge_points(&shapes).expect("edge still drawn");
+        let g = s.abs_rect(group).unwrap();
+        assert!(
+            near(start, g.right_center()),
+            "starts at the group's right side: {start:?} vs {:?}",
+            g.right_center()
+        );
+        let out = s.abs_rect(outside).unwrap();
+        assert!(
+            near(end, out.left_center()),
+            "{end:?} vs {:?}",
+            out.left_center()
+        );
+    }
+
+    #[test]
+    fn edges_wholly_inside_a_collapsed_group_are_not_drawn() {
+        let Scene {
+            ctx,
+            mut s,
+            group,
+            child,
+            ..
+        } = group_scene();
+        let other = s.add_node(pos2(180.0, 120.0), "other");
+        s.node_mut(other).unwrap().parent = Some(group);
+        let ink = Color32::from_rgb(9, 8, 7);
+        let e = s.connect(child, other, ()).unwrap();
+        s.edge_mut(e).unwrap().color = Some(ink);
+        let drawn = |shapes: &[Shape]| {
+            shapes.iter().any(|sh| matches!(sh, Shape::Path(p) if matches!(&p.stroke.color, egui::epaint::ColorMode::Solid(c) if *c == ink)))
+        };
+        let opts = FlowOptions::default();
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            shapes = run_full(&ctx, &mut s, vec![], None, opts.clone()).1;
+        }
+        assert!(drawn(&shapes), "drawn while the group is open");
+        s.set_collapsed(group, true);
+        for _ in 0..3 {
+            shapes = run_full(&ctx, &mut s, vec![], None, opts.clone()).1;
+        }
+        assert!(!drawn(&shapes), "internal edge hidden when collapsed");
+    }
+
+    #[test]
+    fn a_box_drawn_inside_a_group_selects_members_not_the_group() {
+        let Scene {
+            ctx,
+            mut s,
+            group,
+            child,
+            outside,
+        } = group_scene();
+        let shift = egui::Modifiers::SHIFT;
+        let btn = |pos, pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: shift,
+        };
+        let c = s.abs_rect(child).unwrap();
+        let opts = FlowOptions::default();
+        let drag_box = |s: &mut FlowState<&'static str, ()>, from: Pos2, to: Pos2| {
+            run_full_mods(
+                &ctx,
+                s,
+                vec![Event::PointerMoved(from)],
+                None,
+                opts.clone(),
+                shift,
+            );
+            run_full_mods(&ctx, s, vec![btn(from, true)], None, opts.clone(), shift);
+            for i in 1..=6 {
+                let p = from + (to - from) * (i as f32 / 6.0);
+                run_full_mods(
+                    &ctx,
+                    s,
+                    vec![Event::PointerMoved(p)],
+                    None,
+                    opts.clone(),
+                    shift,
+                );
+            }
+            run_full_mods(&ctx, s, vec![btn(to, false)], None, opts.clone(), shift);
+        };
+        // Starts on the group's empty body, which is not grabbable, and covers only the member.
+        drag_box(
+            &mut s,
+            pos2(c.min.x - 10.0, c.min.y - 10.0),
+            pos2(c.max.x + 10.0, c.max.y + 10.0),
+        );
+        assert_eq!(s.selected_nodes(), vec![child]);
+        // Covering the whole group (and the node beside it) picks the group too.
+        drag_box(&mut s, pos2(90.0, 90.0), pos2(700.0, 340.0));
+        let picked: HashSet<_> = s.selected_nodes().into_iter().collect();
+        assert!(
+            picked.contains(&group) && picked.contains(&child) && picked.contains(&outside),
+            "{picked:?}"
+        );
+    }
+
+    #[test]
+    fn nudging_a_group_moves_its_members_too() {
+        let Scene {
+            ctx,
+            mut s,
+            group,
+            child,
+            ..
+        } = group_scene();
+        let (g0, c0) = (
+            s.abs_position(group).unwrap(),
+            s.abs_position(child).unwrap(),
+        );
+        s.clear_selection();
+        s.node_mut(group).unwrap().selected = true;
+        run_frame(
+            &ctx,
+            &mut s,
+            vec![Event::PointerMoved(pos2(650.0, 500.0))],
+            false,
+        );
+        run_frame(
+            &ctx,
+            &mut s,
+            vec![Event::Key {
+                key: egui::Key::ArrowRight,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::SHIFT,
+            }],
+            false,
+        );
+        assert_eq!(s.abs_position(group), Some(g0 + vec2(10.0, 0.0)));
+        assert_eq!(s.abs_position(child), Some(c0 + vec2(10.0, 0.0)));
     }
 
     #[test]
