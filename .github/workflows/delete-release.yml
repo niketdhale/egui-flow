@@ -1,0 +1,39 @@
+name: Delete release
+
+# Maintenance: remove a published GitHub Release and its git tag, for example one
+# cut with the wrong version. Run it by hand on `main` and type the tag twice.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag whose release and tag should be deleted, e.g. v0.1.0"
+        required: true
+        type: string
+      confirm:
+        description: "Type the tag again to confirm"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  delete:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete the release and its tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$TAG" != "$CONFIRM" ]; then
+            echo "::error::the tag and the confirmation do not match"
+            exit 1
+          fi
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::'$TAG' is not a version tag like v1.2.3"
+            exit 1
+          fi
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes

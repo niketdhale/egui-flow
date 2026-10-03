@@ -4,10 +4,11 @@ All notable changes to egui-flow are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/).
 
-## [1.0.0] - 2026-10-03
+## [0.1.0] - 2026-10-03
 
 First release. egui-flow is a [React Flow](https://reactflow.dev/)-style node-graph canvas for
-[egui](https://github.com/emilk/egui) 0.33, in pure Rust.
+[egui](https://github.com/emilk/egui) 0.33, in pure Rust. While the version is below 1.0 the API
+may still change in a minor release; such changes will be called out here.
 
 ### Canvas and nodes
 - Pan (drag the background or middle mouse) and zoom (wheel or pinch, zoom-to-cursor), `fit_view`
@@ -60,9 +61,9 @@ First release. egui-flow is a [React Flow](https://reactflow.dev/)-style node-gr
 - CI on Linux, plus library tests on Windows and macOS; render tests inspect the painted shapes.
 
 ### Notes for users of earlier commits
-Anyone pinned to a pre-1.0 commit (for example `57f39cb`) should know:
+Anyone pinned to a commit from before this release (for example `57f39cb`) should know:
 - `PulseStyle` is no longer `Copy` (it holds a `String` label); it is still `Clone`.
 - `Node`, `Edge`, `FlowOptions` and `PulseStyle` gained fields. They all have defaults, but code
   that builds them with a full struct literal needs the new fields or `..Default::default()`.
 
-[1.0.0]: https://github.com/niketdhale/egui-flow/releases/tag/v1.0.0
+[0.1.0]: https://github.com/niketdhale/egui-flow/releases/tag/v0.1.0
