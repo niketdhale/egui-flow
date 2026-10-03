@@ -1,19 +1,30 @@
 name: Release
 
-# Push a tag like `v1.0.0` to publish a GitHub Release. The tag must match the
-# version in Cargo.toml, and CHANGELOG.md must have a section for it.
+# Publish a GitHub Release for a version like `v1.0.0`. Either push the tag, or run
+# this workflow by hand from the Actions tab on `main` with the tag name: the tag
+# is then created on the current `main` commit. The tag must match the version in
+# Cargo.toml, and CHANGELOG.md must have a section for it.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release, e.g. v1.0.0 (created on this commit if it does not exist)"
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   verify:
+    # A manual run may only release from `main`.
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,8 +39,8 @@ jobs:
       - name: Tag matches Cargo.toml
         run: |
           version=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match Cargo.toml version $version"
             exit 1
           fi
       - run: cargo fmt --check
@@ -47,7 +58,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Release notes from CHANGELOG.md
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${TAG#v}"
           awk -v v="$version" '
             $0 ~ "^## \\[" v "\\]" { found = 1; next }
             found && /^## \[/ { exit }
@@ -58,20 +69,25 @@ jobs:
             exit 1
           fi
           {
-            echo "![egui-flow tour](https://github.com/${GITHUB_REPOSITORY}/raw/${GITHUB_REF_NAME}/docs/media/tour.gif)"
+            echo "![egui-flow tour](https://github.com/${GITHUB_REPOSITORY}/raw/${TAG}/docs/media/tour.gif)"
             echo
             cat section.md
             echo
-            echo "Full changelog: https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md"
+            echo "Full changelog: https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/CHANGELOG.md"
           } > notes.md
       - name: Create the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           flags=""
-          case "$GITHUB_REF_NAME" in *-*) flags="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" \
-            --title "egui-flow $GITHUB_REF_NAME" \
+          case "$TAG" in *-*) flags="--prerelease" ;; esac
+          # A pushed tag must already exist; a manual run creates it on this commit.
+          if [ "${{ github.event_name }}" = "push" ]; then
+            flags="$flags --verify-tag"
+          else
+            flags="$flags --target $GITHUB_SHA"
+          fi
+          gh release create "$TAG" \
+            --title "egui-flow $TAG" \
             --notes-file notes.md \
-            --verify-tag \
             $flags
