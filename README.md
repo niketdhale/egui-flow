@@ -165,8 +165,13 @@ The icons are drawn with egui's painter, so they never render as empty boxes lik
 ```sh
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
+cargo test --all-features      # unit + render tests (they inspect the painted shapes)
+cargo test --lib               # without the optional serde feature
+cargo build --examples --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 ```
+
+CI runs all of these on Linux, and the library tests on Windows and macOS too.
 
 ## Animation
 
