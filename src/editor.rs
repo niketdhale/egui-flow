@@ -160,6 +160,8 @@ impl<N: Clone, E: Clone> Editor<N, E> {
                 FlowEvent::NodesDragStopped(_)
                 | FlowEvent::Connected(_)
                 | FlowEvent::Reconnected { .. }
+                | FlowEvent::ParentChanged { .. }
+                | FlowEvent::GroupToggled { .. }
                 | FlowEvent::Deleted { .. }
                 | FlowEvent::NodeResized { finished: true, .. } => {
                     self.commit(state);
@@ -269,6 +271,43 @@ mod tests {
             s.node(a).unwrap().selected,
             "restored node is selected again"
         );
+    }
+
+    #[test]
+    fn group_changes_are_undoable() {
+        let mut s = state();
+        let a = s.nodes[0].id;
+        let g = s.add_group(pos2(100.0, 100.0), egui::vec2(200.0, 100.0), "g");
+        let mut ed = Editor::new(&s);
+
+        // Dropping `a` into the group, as the canvas reports it.
+        s.set_parent(a, Some(g));
+        assert!(ed.process(
+            &mut s,
+            &[FlowEvent::ParentChanged {
+                node: a,
+                parent: Some(g)
+            }]
+        ));
+        assert_eq!(s.node(a).unwrap().parent, Some(g));
+        // Collapsing it is a step of its own.
+        s.set_collapsed(g, true);
+        assert!(ed.process(
+            &mut s,
+            &[FlowEvent::GroupToggled {
+                node: g,
+                collapsed: true
+            }]
+        ));
+        assert!(s.is_hidden(a));
+
+        assert!(ed.undo(&mut s));
+        assert!(!s.node(g).unwrap().collapsed && !s.is_hidden(a));
+        assert!(ed.undo(&mut s));
+        assert_eq!(s.node(a).unwrap().parent, None);
+        assert_eq!(s.abs_position(a), Some(pos2(0.0, 0.0)), "back where it was");
+        assert!(ed.redo(&mut s));
+        assert_eq!(s.node(a).unwrap().parent, Some(g));
     }
 
     #[test]

@@ -33,6 +33,17 @@ pub enum FlowEvent<N, E> {
         size: Vec2,
         finished: bool,
     },
+    /// A group was collapsed or expanded with its header toggle.
+    GroupToggled {
+        node: NodeId,
+        collapsed: bool,
+    },
+    /// A node was dropped into a group, or out of one. `parent` is the group it is
+    /// now in (`None` for the top level).
+    ParentChanged {
+        node: NodeId,
+        parent: Option<NodeId>,
+    },
     /// Ctrl/Cmd+Z. Handled for you by [`Editor::process`](crate::Editor::process).
     UndoRequested,
     /// Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y.

@@ -31,7 +31,10 @@ pub(crate) struct ResizeDrag {
 }
 
 pub(crate) struct NodeDrag {
+    /// Every node that moves: the dragged nodes and everything inside dragged groups.
     pub origins: Vec<(NodeId, Pos2)>,
+    /// The dragged nodes themselves (not their group members).
+    pub roots: Vec<NodeId>,
     pub accum: Vec2,
 }
 
@@ -168,6 +171,8 @@ pub struct FlowState<N, E> {
     next_edge: u64,
     pub(crate) fit_frames: u8,
     pub(crate) initialized: bool,
+    /// True while a frame runs: node positions are then absolute (see `groups.rs`).
+    pub(crate) flat: bool,
     pub(crate) interaction: Interaction,
     pub(crate) pulses: Vec<ActivePulse>,
     pub(crate) view_anim: Option<ViewAnim>,
@@ -188,6 +193,7 @@ impl<N, E> Default for FlowState<N, E> {
             next_edge: 1,
             fit_frames: 0,
             initialized: false,
+            flat: false,
             interaction: Interaction::default(),
             pulses: Vec::new(),
             view_anim: None,
@@ -291,6 +297,12 @@ impl<N, E> FlowState<N, E> {
     /// Remove a node and every edge attached to it.
     pub fn remove_node(&mut self, id: NodeId) -> Option<(Node<N>, Vec<Edge<E>>)> {
         let idx = self.nodes.iter().position(|n| n.id == id)?;
+        // Members of a removed group move up a level, staying where they are.
+        let parent = self.nodes[idx].parent;
+        for child in self.children(id) {
+            self.reparent_keep_visual(child, parent);
+        }
+        let idx = self.nodes.iter().position(|n| n.id == id)?;
         let node = self.nodes.remove(idx);
         let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.edges)
             .into_iter()
@@ -333,12 +345,20 @@ impl<N, E> FlowState<N, E> {
     /// Remove every selected, deletable node and edge (plus edges orphaned by
     /// node removal). Returns what was removed.
     pub fn delete_selected(&mut self) -> (Vec<Node<N>>, Vec<Edge<E>>) {
-        let node_ids: Vec<_> = self
+        let mut node_ids: Vec<NodeId> = self
             .nodes
             .iter()
             .filter(|n| n.selected && n.deletable)
             .map(|n| n.id)
             .collect();
+        // Deleting a group deletes what is inside it (ungroup it first to keep the members).
+        for id in node_ids.clone() {
+            for d in self.descendants(id) {
+                if self.node(d).is_some_and(|n| n.deletable) && !node_ids.contains(&d) {
+                    node_ids.push(d);
+                }
+            }
+        }
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
         for id in node_ids {
@@ -360,8 +380,15 @@ impl<N, E> FlowState<N, E> {
     }
 
     /// Smallest rect containing every node, if there are any.
+    /// Smallest rect containing every visible node (members of collapsed groups
+    /// are not visible), in flow space.
     pub fn bounds(&self) -> Option<Rect> {
-        self.nodes.iter().map(Node::rect).reduce(|a, b| a.union(b))
+        let hidden = self.hidden_nodes();
+        self.nodes
+            .iter()
+            .filter(|n| !hidden.contains(&n.id))
+            .filter_map(|n| self.abs_rect(n.id))
+            .reduce(|a, b| a.union(b))
     }
 
     /// Re-frame the viewport around all nodes on the next frames.
@@ -495,34 +522,70 @@ impl<N: Clone, E: Clone> FlowState<N, E> {
     /// Copy the selected nodes and every edge between two of them. `None` if
     /// no node is selected.
     pub fn copy_selected(&self) -> Option<Clipboard<N, E>> {
-        let nodes: Vec<_> = self.nodes.iter().filter(|n| n.selected).cloned().collect();
-        if nodes.is_empty() {
+        let hidden = self.hidden_nodes();
+        let mut ids: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .filter(|n| n.selected && !hidden.contains(&n.id))
+            .map(|n| n.id)
+            .collect();
+        if ids.is_empty() {
             return None;
         }
-        let ids: HashSet<_> = nodes.iter().map(|n| n.id).collect();
+        // A copied group brings everything inside it.
+        for id in ids.clone() {
+            for d in self.descendants(id) {
+                if !ids.contains(&d) {
+                    ids.push(d);
+                }
+            }
+        }
+        let set: HashSet<NodeId> = ids.iter().copied().collect();
+        let nodes: Vec<_> = self
+            .nodes
+            .iter()
+            .filter(|n| set.contains(&n.id))
+            .map(|n| {
+                let mut copy = n.clone();
+                // A member whose group is not copied becomes a top-level node, where it is.
+                if !copy.parent.is_some_and(|p| set.contains(&p)) {
+                    copy.position = self.abs_position(n.id).unwrap_or(n.position);
+                    copy.parent = None;
+                }
+                copy
+            })
+            .collect();
         let edges = self
             .edges
             .iter()
-            .filter(|e| ids.contains(&e.source) && ids.contains(&e.target))
+            .filter(|e| set.contains(&e.source) && set.contains(&e.target))
             .cloned()
             .collect();
         Some(Clipboard { nodes, edges })
     }
 
-    /// Insert a copy of `clipboard`, moved by `offset`, with fresh ids and the
-    /// edges re-pointed at the new nodes. The pasted nodes become the
-    /// selection. Returns their ids.
+    /// Insert a copy of `clipboard`, with fresh ids and the edges and group
+    /// membership re-pointed at the new nodes. Top-level pasted nodes are moved by
+    /// `offset` and become the selection (members of pasted groups move with their
+    /// group). Returns every new node's id.
     pub fn paste(&mut self, clipboard: &Clipboard<N, E>, offset: Vec2) -> Vec<NodeId> {
         self.clear_selection();
         let mut map = HashMap::new();
+        for n in &clipboard.nodes {
+            map.insert(n.id, NodeId(self.next_node));
+            self.next_node += 1;
+        }
         let mut new_ids = Vec::new();
         for n in &clipboard.nodes {
             let mut node = n.clone();
-            node.id = NodeId(self.next_node);
-            self.next_node += 1;
-            node.position += offset;
-            node.selected = true;
-            map.insert(n.id, node.id);
+            node.id = map[&n.id];
+            node.parent = n.parent.and_then(|p| map.get(&p).copied());
+            if node.parent.is_none() {
+                node.position += offset;
+                node.selected = true;
+            } else {
+                node.selected = false;
+            }
             new_ids.push(node.id);
             self.nodes.push(node);
         }

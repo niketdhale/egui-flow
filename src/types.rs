@@ -215,6 +215,18 @@ pub struct Node<D> {
     pub max_size: Option<Vec2>,
     /// Show resize grips when the node is selected.
     pub resizable: bool,
+    /// The group this node sits in. `position` is then relative to that group's
+    /// top-left corner, so moving the group moves its members. While
+    /// [`Flow::show`](crate::Flow::show) runs (including in your viewer callbacks)
+    /// positions are in flow space; use
+    /// [`FlowState::abs_position`](crate::FlowState::abs_position) outside it.
+    pub parent: Option<NodeId>,
+    /// A container for other nodes (see [`FlowState::set_parent`](crate::FlowState::set_parent)).
+    /// Groups draw behind their members and can be collapsed.
+    pub is_group: bool,
+    /// For groups: hide the members and show just the group's header. Edges to hidden
+    /// members attach to the group instead.
+    pub collapsed: bool,
     pub data: D,
     pub selected: bool,
     pub draggable: bool,
@@ -232,12 +244,28 @@ impl<D> Node<D> {
             min_size: vec2(60.0, 30.0),
             max_size: None,
             resizable: true,
+            parent: None,
+            is_group: false,
+            collapsed: false,
             data,
             selected: false,
             draggable: true,
             connectable: true,
             deletable: true,
         }
+    }
+
+    /// Make this node a group of the given size.
+    pub fn group(mut self, size: Vec2) -> Self {
+        self.is_group = true;
+        self.fixed_size = Some(size);
+        self
+    }
+
+    /// Place this node inside `parent` (its `position` is then relative to the parent).
+    pub fn in_group(mut self, parent: NodeId) -> Self {
+        self.parent = Some(parent);
+        self
     }
 
     /// Start with a fixed size instead of sizing to the content.

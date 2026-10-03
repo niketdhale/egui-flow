@@ -6,6 +6,8 @@
 //! * select a node and drag its corner or edges to resize it
 //! * Ctrl/Cmd+Z / Shift+Z undo and redo, Ctrl/Cmd+C / V / X / D copy, paste, cut, duplicate
 //! * drag a node near another to see alignment guides; arrow keys nudge selected nodes
+//! * the Powertrain group: drag its header, collapse it, drop nodes in or out; "Group" wraps the selection
+//! * zoom in far: text stays sharp (untick "Crisp text" to compare)
 //! * "Highlight connected" dims everything unrelated to the selected/hovered node
 
 use egui::{Color32, Ui};
@@ -19,6 +21,7 @@ pub enum Role {
     Ecu,
     Bus,
     Gateway,
+    Group,
 }
 
 #[derive(Clone)]
@@ -33,6 +36,14 @@ impl FlowViewer<Data, ()> for Viewer {
     fn node_ui(&mut self, ui: &mut Ui, node: &mut Node<Data>) {
         let text = egui::RichText::new(node.data.name).strong();
         match node.data.role {
+            // Leave room on the right for the collapse toggle the canvas draws.
+            Role::Group => {
+                ui.horizontal(|ui| {
+                    ui.label(text.color(Color32::from_rgb(170, 190, 230)));
+                    ui.add_space(28.0);
+                })
+                .response
+            }
             Role::Ecu => ui.label(text),
             Role::Bus => ui.label(text.color(Color32::from_rgb(230, 180, 70))),
             Role::Gateway => ui.label(text.color(Color32::from_rgb(120, 190, 255))),
@@ -40,7 +51,15 @@ impl FlowViewer<Data, ()> for Viewer {
     }
 
     fn node_frame(&self, ui: &Ui, node: &Node<Data>) -> egui::Frame {
+        if node.data.role == Role::Group {
+            return egui::Frame::new()
+                .fill(Color32::from_rgba_unmultiplied(70, 100, 160, 34))
+                .stroke(egui::Stroke::new(1.5_f32, Color32::from_rgb(90, 120, 190)))
+                .corner_radius(10)
+                .inner_margin(egui::Margin::symmetric(12, 6));
+        }
         let accent = match node.data.role {
+            Role::Group => unreachable!(),
             Role::Ecu => Color32::from_rgb(110, 160, 110),
             Role::Bus => Color32::from_rgb(200, 150, 50),
             Role::Gateway => Color32::from_rgb(90, 150, 220),
@@ -52,7 +71,10 @@ impl FlowViewer<Data, ()> for Viewer {
             .inner_margin(egui::Margin::symmetric(14, 8))
     }
 
-    fn handles(&self, _node: &Node<Data>) -> Vec<Handle> {
+    fn handles(&self, node: &Node<Data>) -> Vec<Handle> {
+        if node.data.role == Role::Group {
+            return Vec::new();
+        }
         vec![
             Handle::target(Handle::DEFAULT_TARGET, Side::Left),
             Handle::source(Handle::DEFAULT_SOURCE, Side::Right),
@@ -61,6 +83,7 @@ impl FlowViewer<Data, ()> for Viewer {
 
     fn minimap_color(&self, node: &Node<Data>) -> Option<Color32> {
         Some(match node.data.role {
+            Role::Group => Color32::from_rgb(90, 120, 190),
             Role::Ecu => Color32::from_rgb(110, 160, 110),
             Role::Bus => Color32::from_rgb(200, 150, 50),
             Role::Gateway => Color32::from_rgb(90, 150, 220),
@@ -72,6 +95,7 @@ pub struct App {
     pub state: FlowState<Data, ()>,
     pub editor: Editor<Data, ()>,
     pub highlight: bool,
+    pub crisp: bool,
     pub engine: NodeId,
     pub route: Vec<EdgeId>,
     pub brake_edge: EdgeId,
@@ -102,6 +126,17 @@ impl App {
         let dash = add(&mut s, Role::Ecu, "Dashboard", 770.0, 120.0);
         // Not wired up yet: drag from its right handle onto a bus to connect it.
         let diag = add(&mut s, Role::Ecu, "Diag tool", 0.0, 330.0);
+        // A group around the two ECUs on the left: positions inside it are relative to it.
+        let powertrain = s.add_group(
+            egui::pos2(-30.0, -12.0),
+            egui::vec2(150.0, 275.0),
+            Data {
+                role: Role::Group,
+                name: "Powertrain",
+            },
+        );
+        s.set_parent(engine, Some(powertrain));
+        s.set_parent(brake, Some(powertrain));
 
         let wire = |s: &mut FlowState<Data, ()>, a, b, kind| {
             let id = s.connect(a, b, ()).unwrap();
@@ -143,6 +178,7 @@ impl App {
             editor: Editor::new(&s),
             state: s,
             highlight: false,
+            crisp: true,
             engine,
             route: vec![e1, e3, e4, e5],
             brake_edge,
@@ -154,6 +190,7 @@ impl App {
                 ("can2", can2),
                 ("dash", dash),
                 ("diag", diag),
+                ("powertrain", powertrain),
             ],
             arrived: 0,
             canvas: egui::Rect::NOTHING,
@@ -197,6 +234,32 @@ impl App {
                     self.send_frame(0.9, 1);
                 }
                 ui.checkbox(&mut self.highlight, "Highlight connected");
+                ui.checkbox(&mut self.crisp, "Crisp text");
+                if ui.button("Group").clicked()
+                    && self
+                        .state
+                        .group_selected(
+                            Data {
+                                role: Role::Group,
+                                name: "Group",
+                            },
+                            24.0,
+                            30.0,
+                        )
+                        .is_some()
+                {
+                    self.editor.commit(&self.state);
+                }
+                if ui.button("Ungroup").clicked() {
+                    let selected = self.state.selected_nodes();
+                    let mut changed = false;
+                    for id in selected {
+                        changed |= self.state.ungroup(id);
+                    }
+                    if changed {
+                        self.editor.commit(&self.state);
+                    }
+                }
                 ui.separator();
                 ui.label("Edges:");
                 for (kind, name) in [
@@ -241,6 +304,7 @@ impl App {
                 let opts = FlowOptions {
                     background: Background::Dots,
                     highlight_connected: self.highlight,
+                    crisp_text: self.crisp,
                     alignment_guides: true,
                     minimap: true,
                     fit_view_on_init: true,

@@ -20,7 +20,7 @@ cargo run --example icons   # built-in icon gallery
 
 One continuous take through the whole library, recorded from the real app ([`examples/gateway`](examples/gateway.rs)):
 
-![A 50-second tour of egui-flow: pan and zoom, drag with alignment guides, connect, reconnect, edge and line styles, route pulses, resize, nudge, highlight, box select, copy and paste, undo and redo, delete](docs/media/tour.gif)
+![An 80-second tour of egui-flow: pan and zoom, drag with alignment guides, connect, reconnect, edge and line styles, route pulses, resize, nudge, highlight, box select, copy and paste, undo and redo, delete, groups (move, collapse, drag in and out, wrap, ungroup) and crisp text at high zoom](docs/media/tour.gif)
 
 In order, with where to look:
 
@@ -38,6 +38,16 @@ In order, with where to look:
 | Box select | Shift-drag |
 | Copy, paste, undo, redo | `Editor`; Ctrl/Cmd+C, V, Z, Shift+Z |
 | Delete | removes the selection and its edges |
+| Groups | `Node::{is_group, parent}`, `FlowState::add_group`; drag the header and the members follow |
+| Collapse | the header toggle (`FlowEvent::GroupToggled`); edges to hidden members attach to the group |
+| Drag in and out | drop a node on a group to put it in, outside to take it out (`FlowEvent::ParentChanged`, `FlowOptions::group_drop`) |
+| Group selected, ungroup | `FlowState::group_selected(..)`, `FlowState::ungroup(..)` |
+| Crisp text | `FlowOptions::crisp_text`: text is laid out again at the zoomed size, see below |
+
+### Crisp text when zoomed
+The canvas is drawn into a scaled layer, so text used to be the 1x raster stretched by the zoom. With `FlowOptions::crisp_text` (on by default) it is laid out again at the zoomed size:
+
+![The same node at 3.4x zoom: blocky text with crisp_text off, sharp text with it on](docs/media/crisp-text.png)
 
 ### Icons
 Painter-drawn, so they need no font and never render as empty boxes.
@@ -48,6 +58,8 @@ Painter-drawn, so they need no font and never render as empty boxes.
 
 | React Flow | egui-flow |
 |---|---|
+| Crisp text when zoomed | `FlowOptions::crisp_text` (on by default) re-lays out text at the zoomed size instead of stretching the 1x raster; the `gateway` example has a "Crisp text" checkbox to compare |
+| Groups / sub-flows | `Node::{is_group, parent, collapsed}`; positions inside a group are relative to it; nesting, collapse, drag in and out, `group_selected`, `ungroup`, `fit_group` (see Groups below) |
 | Pan / zoom viewport | drag background or middle mouse to pan, wheel / pinch to zoom (zoom-to-cursor), `fit_view()` |
 | Custom nodes | implement `FlowViewer::node_ui` with any egui widgets |
 | Handles | `FlowViewer::handles` — any number per node, on any side, source or target |
@@ -178,6 +190,32 @@ for event in out.events {
 }
 ```
 
+## Groups
+
+A group is a node that contains other nodes. Give a node a `parent` and its `position` becomes relative to that group, so moving the group moves everything inside. Groups nest.
+
+```rust
+let group = state.add_group(egui::pos2(0.0, 0.0), egui::vec2(300.0, 200.0), Data::group("Powertrain"));
+let engine = state.add_node(egui::pos2(20.0, 50.0), Data::ecu("Engine"));
+state.node_mut(engine).unwrap().parent = Some(group); // position is now relative to the group
+// or move an existing node in without it moving on screen:
+state.set_parent(brake, Some(group));
+
+state.group_selected(Data::group("Group"), 24.0, 30.0); // wrap the selection
+state.fit_group(group, 24.0, 30.0);                    // resize a group to hug its members
+state.set_collapsed(group, true);                      // hide the members
+state.ungroup(group);                                  // members move up a level, in place
+```
+
+What the canvas does for you:
+* A group draws behind its members. Only its header (`FlowOptions::group_header_height`) is grabbable, so empty space inside an open group still pans and box-selects; a collapsed group is grabbable all over.
+* Every group has a collapse toggle in its header's top-right corner; leave a little room there in `node_ui`. A collapsed group shrinks to its header, hides its members, and edges to hidden members attach to the group's sides (edges wholly inside it are not drawn).
+* Dropping a node on a group puts it in that group; dropping it outside its group takes it out (`FlowOptions::group_drop`). Both report `FlowEvent::ParentChanged`.
+* Dragging, nudging, copying and deleting a group take its members along. To delete a group but keep its members, `ungroup` it first.
+* A box select picks an open group only when the box covers all of it, so a box drawn inside one selects its members.
+
+Inside `Flow::show` (including your `FlowViewer` callbacks) node positions are in flow space; outside it, use `FlowState::abs_position` / `abs_rect` for flow-space positions of nodes in groups. `FlowState::bounds` already accounts for groups and ignores hidden members.
+
 ## Multiple connection points
 
 Give a node several handles from `FlowViewer::handles`, each with its own side and `offset` (`0.0..=1.0` along that side), and select them with `source_handle` / `target_handle` on the edge, so a gateway's wires to CAN1 and CAN2 leave from different points:
@@ -233,8 +271,8 @@ Everything above that moves can be disabled at once with `FlowOptions { animate:
 
 ## Notes
 
-* Content scales with zoom by rasterising at 1× and transforming, so text is soft when zoomed in far (same as `egui::Scene`).
+* Zooming scales the node content with a layer transform. Text is laid out again at the zoomed size (`crisp_text`) so it stays sharp; other painted content, such as images, is scaled as usual.
 * Selectable labels are disabled inside nodes so dragging on text moves the node; re-enable in `node_ui` if needed.
 * Resizing sets a size; it does not make node content scale.
 * No node exit animation (removed nodes vanish immediately) or per-edge dash patterns.
-* Not yet implemented: nested/grouped nodes, auto-layout.
+* Not yet implemented: auto-layout, and constraining a member to stay inside its group while dragging.

@@ -48,6 +48,16 @@ pub struct FlowOptions {
     pub nodes_connectable: bool,
     /// When to draw the connection dots on nodes.
     pub handle_visibility: HandleVisibility,
+    /// Lay text out again at the zoomed size so it stays sharp when zoomed in
+    /// (and clean when zoomed out). Off, text is the 1x raster stretched by the
+    /// zoom, which is cheaper but soft above 1x.
+    pub crisp_text: bool,
+    /// Dropping a node on a group puts it in that group; dropping it outside its
+    /// group takes it out. Off, membership only changes through the API.
+    pub group_drop: bool,
+    /// Height of a group's header strip. Only the header (and the collapsed group) is
+    /// grabbable, so empty space inside a group still pans and box-selects.
+    pub group_header_height: f32,
     pub elements_selectable: bool,
     /// Delete/Backspace removes the selection.
     pub delete_key: bool,
@@ -98,6 +108,9 @@ impl Default for FlowOptions {
             nodes_draggable: true,
             nodes_connectable: true,
             handle_visibility: HandleVisibility::Always,
+            crisp_text: true,
+            group_drop: true,
+            group_header_height: 30.0,
             elements_selectable: true,
             delete_key: true,
             allow_self_loops: false,
