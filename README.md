@@ -1,6 +1,7 @@
 # egui-flow
 
 [![CI](https://github.com/niketdhale/egui-flow/actions/workflows/ci.yml/badge.svg)](https://github.com/niketdhale/egui-flow/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/niketdhale/egui-flow)](https://github.com/niketdhale/egui-flow/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![egui 0.33](https://img.shields.io/badge/egui-0.33-orange.svg)](https://github.com/emilk/egui)
 [![Rust edition 2024](https://img.shields.io/badge/rust-edition%202024-dea584.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
@@ -75,6 +76,17 @@ Painter-drawn, so they need no font and never render as empty boxes.
 | `<Background>` | `Dots`, `Lines`, `Cross`, `None` |
 | `<MiniMap>` / `<Controls>` | `FlowOptions::{minimap, controls}` |
 | `onConnect`, `onNodesDelete`, … | `FlowEvent` values returned from `show` |
+
+## Installation
+
+egui-flow is not on crates.io yet; depend on a tagged release from GitHub:
+
+```toml
+[dependencies]
+egui-flow = { git = "https://github.com/niketdhale/egui-flow", tag = "v1.0.0" }
+```
+
+It targets egui 0.33. Releases follow [Semantic Versioning](https://semver.org/); see the [changelog](CHANGELOG.md) and the [releases page](https://github.com/niketdhale/egui-flow/releases).
 
 ## Usage
 
