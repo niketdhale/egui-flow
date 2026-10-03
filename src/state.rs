@@ -10,6 +10,9 @@ use crate::types::*;
 pub(crate) struct ConnectDrag {
     pub node: NodeId,
     pub handle: HandleId,
+    /// Set when an existing edge's end is being dragged to a new handle; the
+    /// `node`/`handle` are then the edge's fixed end.
+    pub reconnecting: Option<EdgeId>,
 }
 
 #[derive(Default)]
@@ -17,6 +20,13 @@ pub(crate) struct Interaction {
     pub node_drag: Option<NodeDrag>,
     pub box_select: Option<Pos2>,
     pub connecting: Option<ConnectDrag>,
+    pub resize: Option<ResizeDrag>,
+}
+
+pub(crate) struct ResizeDrag {
+    pub node: NodeId,
+    pub start: Vec2,
+    pub accum: Vec2,
 }
 
 pub(crate) struct NodeDrag {
@@ -34,6 +44,35 @@ pub enum PulseDirection {
     Reverse,
 }
 
+/// Shape of a pulse's head.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PulseShape {
+    #[default]
+    Circle,
+    Square,
+    Diamond,
+    /// A triangle pointing along the direction of travel.
+    Arrow,
+}
+
+/// Speed profile of a pulse along its edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PulseEasing {
+    Linear,
+    /// Slow start and end (smoothstep).
+    #[default]
+    EaseInOut,
+}
+
+impl PulseEasing {
+    pub(crate) fn apply(self, t: f32) -> f32 {
+        match self {
+            PulseEasing::Linear => t,
+            PulseEasing::EaseInOut => t * t * (3.0 - 2.0 * t),
+        }
+    }
+}
+
 /// What [`FlowState::pulse_edge`] does when an edge is already at
 /// [`FlowState::max_pulses_per_edge`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -43,6 +82,14 @@ pub enum PulseOverflow {
     Drop,
     /// Remove the oldest pulse on that edge to make room.
     ReplaceOldest,
+}
+
+/// Nodes and the edges between them, copied out of a [`FlowState`] by
+/// [`copy_selected`](FlowState::copy_selected).
+#[derive(Clone, Debug)]
+pub struct Clipboard<N, E> {
+    pub nodes: Vec<Node<N>>,
+    pub edges: Vec<Edge<E>>,
 }
 
 /// Appearance of a [`FlowState::pulse_edge`] particle.
@@ -61,6 +108,14 @@ pub struct PulseStyle {
     pub delay: f32,
     /// Shown next to the pulse while the pointer hovers it.
     pub label: Option<String>,
+    /// Head shape.
+    pub shape: PulseShape,
+    /// Speed profile.
+    pub easing: PulseEasing,
+    /// Number of fading copies drawn behind the head (0 for none).
+    pub trail: u8,
+    /// Your own identifier, returned in [`FlowEvent::PulseArrived`](crate::FlowEvent::PulseArrived).
+    pub tag: u64,
 }
 
 impl Default for PulseStyle {
@@ -72,6 +127,10 @@ impl Default for PulseStyle {
             direction: PulseDirection::Forward,
             delay: 0.0,
             label: None,
+            shape: PulseShape::Circle,
+            easing: PulseEasing::EaseInOut,
+            trail: 3,
+            tag: 0,
         }
     }
 }
@@ -199,6 +258,7 @@ impl<N, E> FlowState<N, E> {
             data,
             kind: None,
             label: None,
+            line_style: LineStyle::Solid,
             animated: false,
             arrow: false,
             color: None,
@@ -360,6 +420,43 @@ impl<N, E> FlowState<N, E> {
         true
     }
 
+    /// Send a pulse along a multi-hop route starting at node `start`, one edge
+    /// after another, each leg starting when the previous one arrives (after
+    /// `style.delay`). The direction of each leg is worked out from the route,
+    /// so a frame can go ECU → bus → gateway → bus without you choosing
+    /// forward or reverse per edge.
+    ///
+    /// Returns `false`, queuing nothing, if the edges don't form a connected
+    /// chain from `start` or any of them is missing.
+    pub fn pulse_route(&mut self, start: NodeId, edges: &[EdgeId], style: PulseStyle) -> bool {
+        let mut legs = Vec::with_capacity(edges.len());
+        let mut at = start;
+        for &id in edges {
+            let Some(e) = self.edge(id) else {
+                return false;
+            };
+            if e.source == at {
+                legs.push((id, PulseDirection::Forward));
+                at = e.target;
+            } else if e.target == at {
+                legs.push((id, PulseDirection::Reverse));
+                at = e.source;
+            } else {
+                return false;
+            }
+        }
+        let leg_time = style.duration.max(1e-3);
+        for (i, (id, direction)) in legs.into_iter().enumerate() {
+            let leg = PulseStyle {
+                direction,
+                delay: style.delay + leg_time * i as f32,
+                ..style.clone()
+            };
+            self.pulse_edge(id, leg);
+        }
+        true
+    }
+
     /// Like [`pulse_edge`](Self::pulse_edge) but travelling from target to source.
     pub fn pulse_edge_reverse(&mut self, edge: EdgeId, mut style: PulseStyle) -> bool {
         style.direction = PulseDirection::Reverse;
@@ -387,6 +484,65 @@ impl<N, E> FlowState<N, E> {
 
     pub(crate) fn selection_snapshot(&self) -> (Vec<NodeId>, Vec<EdgeId>) {
         (self.selected_nodes(), self.selected_edges())
+    }
+}
+
+impl<N: Clone, E: Clone> FlowState<N, E> {
+    /// Copy the selected nodes and every edge between two of them. `None` if
+    /// no node is selected.
+    pub fn copy_selected(&self) -> Option<Clipboard<N, E>> {
+        let nodes: Vec<_> = self.nodes.iter().filter(|n| n.selected).cloned().collect();
+        if nodes.is_empty() {
+            return None;
+        }
+        let ids: HashSet<_> = nodes.iter().map(|n| n.id).collect();
+        let edges = self
+            .edges
+            .iter()
+            .filter(|e| ids.contains(&e.source) && ids.contains(&e.target))
+            .cloned()
+            .collect();
+        Some(Clipboard { nodes, edges })
+    }
+
+    /// Insert a copy of `clipboard`, moved by `offset`, with fresh ids and the
+    /// edges re-pointed at the new nodes. The pasted nodes become the
+    /// selection. Returns their ids.
+    pub fn paste(&mut self, clipboard: &Clipboard<N, E>, offset: Vec2) -> Vec<NodeId> {
+        self.clear_selection();
+        let mut map = HashMap::new();
+        let mut new_ids = Vec::new();
+        for n in &clipboard.nodes {
+            let mut node = n.clone();
+            node.id = NodeId(self.next_node);
+            self.next_node += 1;
+            node.position += offset;
+            node.selected = true;
+            map.insert(n.id, node.id);
+            new_ids.push(node.id);
+            self.nodes.push(node);
+        }
+        for e in &clipboard.edges {
+            let (Some(&source), Some(&target)) = (map.get(&e.source), map.get(&e.target)) else {
+                continue;
+            };
+            let mut edge = e.clone();
+            edge.id = EdgeId(self.next_edge);
+            self.next_edge += 1;
+            edge.source = source;
+            edge.target = target;
+            edge.selected = false;
+            self.edges.push(edge);
+        }
+        new_ids
+    }
+
+    /// Copy the selection and paste it straight away, shifted by `offset`.
+    pub fn duplicate_selected(&mut self, offset: Vec2) -> Vec<NodeId> {
+        match self.copy_selected() {
+            Some(cb) => self.paste(&cb, offset),
+            None => Vec::new(),
+        }
     }
 }
 
@@ -481,6 +637,63 @@ mod tests {
         assert_eq!(s.pulses[0].style.label.as_deref(), Some("1"));
         assert!(s.pulse_edge_reverse(e, PulseStyle::default()));
         assert_eq!(s.pulses[1].style.direction, PulseDirection::Reverse);
+    }
+
+    #[test]
+    fn pulse_route_picks_directions_and_chains_delays() {
+        let mut s: FlowState<(), ()> = FlowState::new();
+        let ecu = s.add_node(pos2(0.0, 0.0), ());
+        let bus = s.add_node(pos2(100.0, 0.0), ());
+        let gw = s.add_node(pos2(200.0, 0.0), ());
+        let up = s.connect(ecu, bus, ()).unwrap(); // ecu -> bus
+        let down = s.connect(gw, bus, ()).unwrap(); // gw -> bus (against the route)
+        let style = PulseStyle {
+            duration: 0.5,
+            delay: 0.1,
+            ..Default::default()
+        };
+        assert!(s.pulse_route(ecu, &[up, down], style.clone()));
+        assert_eq!(s.pulses.len(), 2);
+        assert_eq!(s.pulses[0].style.direction, PulseDirection::Forward);
+        assert_eq!(s.pulses[1].style.direction, PulseDirection::Reverse);
+        assert!((s.pulses[1].style.delay - 0.6).abs() < 1e-6);
+
+        // A broken chain queues nothing.
+        let before = s.pulses.len();
+        assert!(!s.pulse_route(gw, &[up], style));
+        assert_eq!(s.pulses.len(), before);
+    }
+
+    #[test]
+    fn copy_paste_remaps_ids_and_edges() {
+        let (mut s, a, b) = two_nodes();
+        let c = s.add_node(pos2(0.0, 100.0), ());
+        s.connect(a, b, ());
+        s.connect(b, c, ());
+        s.node_mut(a).unwrap().selected = true;
+        s.node_mut(b).unwrap().selected = true;
+        let cb = s.copy_selected().unwrap();
+        assert_eq!(
+            (cb.nodes.len(), cb.edges.len()),
+            (2, 1),
+            "only the inner edge"
+        );
+
+        let new = s.paste(&cb, vec2(10.0, 20.0));
+        assert_eq!(new.len(), 2);
+        assert_eq!(s.nodes.len(), 5);
+        assert_eq!(s.edges.len(), 3);
+        assert_eq!(s.selected_nodes(), new, "pasted nodes become the selection");
+        let pasted = s.edges.last().unwrap();
+        assert!(new.contains(&pasted.source) && new.contains(&pasted.target));
+        assert_eq!(s.node(new[0]).unwrap().position, pos2(10.0, 20.0));
+        assert!(s.edges.iter().map(|e| e.id).collect::<HashSet<_>>().len() == 3);
+    }
+
+    #[test]
+    fn copy_needs_a_selection() {
+        let (s, _, _) = two_nodes();
+        assert!(s.copy_selected().is_none());
     }
 
     #[test]

@@ -6,11 +6,13 @@
 //! * pan (drag the background / middle mouse) and zoom (wheel, pinch)
 //! * draggable nodes with arbitrary egui content
 //! * connectable handles with live validation and snapping
-//! * bezier / straight / step / smooth-step edges, labels, arrows, animation
+//! * bezier / straight / step / smooth-step edges, labels, arrows, animation,
+//!   per-edge colour, width and line style (solid, dashed, dotted, custom)
 //! * click, shift-click and box (shift-drag) selection, Delete to remove
 //! * dots / lines / cross background, minimap, zoom controls
 //! * animated dashed edges, travelling pulses, eased view transitions, node fade-in
 //! * built-in vector [`Icon`]s (check, chevrons, triangles, ...) that need no font
+//! * resizable nodes, undo/redo and copy/paste ([`Editor`])
 //! * events for everything the application needs to mirror
 //!
 //! ```no_run
@@ -29,6 +31,7 @@
 //! }
 //! ```
 
+mod editor;
 mod events;
 mod geometry;
 mod icons;
@@ -38,11 +41,14 @@ mod types;
 mod view;
 mod viewer;
 
+pub use editor::Editor;
 pub use events::{FlowEvent, FlowResponse};
 pub use geometry::{edge_path, point_at};
 pub use icons::{Icon, icon, icon_button};
 pub use options::{Background, FlowOptions};
-pub use state::{FlowState, PulseDirection, PulseOverflow, PulseStyle};
+pub use state::{
+    Clipboard, FlowState, PulseDirection, PulseEasing, PulseOverflow, PulseShape, PulseStyle,
+};
 pub use types::*;
 pub use view::Flow;
 pub use viewer::FlowViewer;

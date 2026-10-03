@@ -1,6 +1,6 @@
 //! The canvas widget.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
 use egui::emath::TSTransform;
@@ -13,7 +13,7 @@ use egui::{
 use crate::events::{FlowEvent, FlowResponse};
 use crate::geometry::{dist_to_path, edge_path, end_direction, path_midpoint, point_at};
 use crate::options::{Background, FlowOptions};
-use crate::state::{ConnectDrag, FlowState, NodeDrag, PulseDirection};
+use crate::state::{ConnectDrag, FlowState, NodeDrag, PulseDirection, PulseShape, ResizeDrag};
 use crate::types::*;
 use crate::viewer::FlowViewer;
 
@@ -63,6 +63,12 @@ impl Flow {
 
     pub fn snap_to_grid(mut self, grid: f32) -> Self {
         self.opts.snap_to_grid = Some(grid);
+        self
+    }
+
+    /// Dim everything not connected to the selected or hovered node.
+    pub fn highlight_connected(mut self, on: bool) -> Self {
+        self.opts.highlight_connected = on;
         self
     }
 
@@ -315,6 +321,53 @@ impl Flow {
             state.nodes.push(n);
         }
 
+        // --- highlight: dim whatever isn't connected to the focus ----------
+        let focus: Option<HashSet<NodeId>> = if o.highlight_connected {
+            let mut seeds: HashSet<NodeId> = state
+                .nodes
+                .iter()
+                .filter(|n| n.selected)
+                .map(|n| n.id)
+                .collect();
+            seeds.extend(
+                node_resps
+                    .iter()
+                    .filter(|(_, r)| r.hovered())
+                    .map(|(id, _)| *id),
+            );
+            for e in state.edges.iter().filter(|e| e.selected) {
+                seeds.insert(e.source);
+                seeds.insert(e.target);
+            }
+            (!seeds.is_empty()).then_some(seeds)
+        } else {
+            None
+        };
+        let edge_dim: Vec<bool> = state
+            .edges
+            .iter()
+            .map(|e| {
+                focus
+                    .as_ref()
+                    .is_some_and(|f| !f.contains(&e.source) && !f.contains(&e.target))
+            })
+            .collect();
+        let related: HashSet<NodeId> = focus
+            .as_ref()
+            .map(|f| {
+                let mut r = f.clone();
+                for e in &state.edges {
+                    if f.contains(&e.source) || f.contains(&e.target) {
+                        r.insert(e.source);
+                        r.insert(e.target);
+                    }
+                }
+                r
+            })
+            .unwrap_or_default();
+        let node_dim = |id: NodeId| focus.is_some() && !related.contains(&id);
+        const DIM: f32 = 0.25;
+
         // --- edges: routing, hover, click ---------------------------------
         let rects: HashMap<NodeId, Rect> = state.nodes.iter().map(|n| (n.id, n.rect())).collect();
         let geoms: Vec<(usize, Vec<Pos2>, Side)> = state
@@ -370,8 +423,16 @@ impl Flow {
         let cp = cui.painter().clone();
         let mut order: Vec<_> = geoms.iter().collect();
         order.sort_by_key(|(i, _, _)| state.edges[*i].selected);
+        let reconnecting_edge = state
+            .interaction
+            .connecting
+            .as_ref()
+            .and_then(|c| c.reconnecting);
         for (i, path, _) in order {
             let e = &state.edges[*i];
+            if reconnecting_edge == Some(e.id) {
+                continue;
+            }
             let hovered = hovered_edge == Some(*i);
             let default_color = visuals
                 .widgets
@@ -383,6 +444,11 @@ impl Flow {
                 sel_color
             } else {
                 e.color.unwrap_or(default_color)
+            };
+            let color = if edge_dim[*i] {
+                color.gamma_multiply(DIM)
+            } else {
+                color
             };
             let base_width = e.width.unwrap_or(1.5);
             let target_width = if e.selected || hovered {
@@ -400,17 +466,26 @@ impl Flow {
                 target_width
             };
             let stroke = Stroke::new(width, color);
-            if e.animated {
-                // Dash period is 6 + 4; wrapping keeps f32 precise on long runs.
-                let offset = (now * e.animation_speed as f64).rem_euclid(10.0) as f32;
+            let pattern = match (e.line_style.pattern(width), e.animated) {
+                (None, true) => LineStyle::Dashed.pattern(width),
+                (p, _) => p,
+            };
+            if let Some((dash, gap)) = pattern {
+                let offset = if e.animated {
+                    // Wrapping keeps f32 precise on long runs.
+                    ui.ctx().request_repaint();
+                    let period = (dash + gap) as f64;
+                    (now * e.animation_speed as f64).rem_euclid(period) as f32
+                } else {
+                    0.0
+                };
                 cp.extend(Shape::dashed_line_with_offset(
                     path,
                     stroke,
-                    &[6.0],
-                    &[4.0],
+                    &[dash],
+                    &[gap],
                     -offset,
                 ));
-                ui.ctx().request_repaint();
             } else {
                 cp.add(Shape::line(path.clone(), stroke));
             }
@@ -425,7 +500,7 @@ impl Flow {
                     Stroke::NONE,
                 ));
             }
-            if let Some(label) = &e.label {
+            if let Some(label) = e.label.as_ref().filter(|_| !edge_dim[*i]) {
                 let galley = cp.layout_no_wrap(
                     label.clone(),
                     FontId::proportional(12.0),
@@ -454,37 +529,42 @@ impl Flow {
             };
             let t = ((now - start) / p.style.duration.max(1e-3) as f64) as f32;
             if t >= 1.0 {
+                events.push(FlowEvent::PulseArrived {
+                    edge: p.edge,
+                    tag: p.style.tag,
+                    direction: p.style.direction,
+                });
                 return false;
             }
             if t < 0.0 {
                 return true; // still waiting out its delay
             }
-            let eased = t * t * (3.0 - 2.0 * t);
-            let eased = match p.style.direction {
-                PulseDirection::Forward => eased,
-                PulseDirection::Reverse => 1.0 - eased,
-            };
-            let sign = if p.style.direction == PulseDirection::Reverse {
-                -1.0
-            } else {
-                1.0
+            let eased = p.style.easing.apply(t);
+            let (eased, sign) = match p.style.direction {
+                PulseDirection::Forward => (eased, 1.0),
+                PulseDirection::Reverse => (1.0 - eased, -1.0),
             };
             let color = p.style.color.unwrap_or(sel_color);
-            // A short fading trail behind the head.
-            for k in 0..4 {
+            let r = p.style.radius;
+            // Fading trail behind the head, then the head itself.
+            for k in (1..=p.style.trail as usize).rev() {
                 let back = eased - sign * 0.03 * k as f32;
                 if !(0.0..=1.0).contains(&back) {
-                    break;
+                    continue;
                 }
                 cp.circle_filled(
                     point_at(path, back),
-                    p.style.radius * (1.0 - 0.18 * k as f32),
-                    color.gamma_multiply(1.0 - 0.25 * k as f32),
+                    r * (1.0 - 0.18 * k as f32).max(0.3),
+                    color.gamma_multiply((1.0 - 0.25 * k as f32).max(0.1)),
                 );
             }
+            let head = point_at(path, eased);
+            let ahead = point_at(path, (eased + sign * 0.01).clamp(0.0, 1.0));
+            let dir = (ahead - head).normalized();
+            let dir = if dir.is_finite() { dir } else { Vec2::X };
+            draw_pulse_head(&cp, head, dir, r, color, p.style.shape);
             if let Some(label) = &p.style.label {
-                let head = point_at(path, eased);
-                let reach = (p.style.radius + 4.0).max(8.0 / state.viewport.zoom.max(1e-3));
+                let reach = (r + 4.0).max(8.0 / state.viewport.zoom.max(1e-3));
                 if pane.hovered()
                     && hovered_pulse.is_none()
                     && let Some(pf) = pointer_scene(&tf)
@@ -513,7 +593,10 @@ impl Flow {
         for i in 0..state.nodes.len() {
             let node = &mut state.nodes[i];
             let frame = viewer.node_frame(&cui, node);
-            let content = Rect::from_min_size(node.position, vec2(MAX_NODE_WIDTH, 10_000.0));
+            let fixed = node.fixed_size;
+            let content_w = fixed.map_or(MAX_NODE_WIDTH, |f| f.x.max(MAX_NODE_WIDTH));
+            let content = Rect::from_min_size(node.position, vec2(content_w, 10_000.0));
+            let margin = frame.total_margin().sum();
             let inner = cui.scope_builder(
                 UiBuilder::new()
                     .id_salt(("flow_node", node.id))
@@ -521,10 +604,19 @@ impl Flow {
                 |ui| {
                     // Selectable labels would swallow the drag that should move the node.
                     ui.style_mut().interaction.selectable_labels = false;
-                    if let Some(a) = alphas.get(&node.id) {
-                        ui.set_opacity(*a);
+                    let a = alphas.get(&node.id).copied().unwrap_or(1.0)
+                        * if node_dim(node.id) { DIM } else { 1.0 };
+                    if a < 1.0 {
+                        ui.set_opacity(a);
                     }
-                    frame.show(ui, |ui| viewer.node_ui(ui, node))
+                    frame.show(ui, |ui| {
+                        if let Some(f) = fixed {
+                            let inner = (f - margin).max(Vec2::ZERO);
+                            ui.set_width(inner.x);
+                            ui.set_min_height(inner.y);
+                        }
+                        viewer.node_ui(ui, node)
+                    })
                 },
             );
             let rect = inner.inner.response.rect;
@@ -539,6 +631,96 @@ impl Flow {
                     ),
                     StrokeKind::Outside,
                 );
+            }
+        }
+
+        // --- resize grips on selected nodes (below handles, which win overlaps)
+        if o.nodes_resizable {
+            let mut resized: Vec<(NodeId, Vec2, bool)> = Vec::new();
+            for n in state.nodes.iter_mut().filter(|n| n.selected && n.resizable) {
+                let r = n.rect();
+                let c = 14.0;
+                let zones = [
+                    (
+                        0u8,
+                        Rect::from_center_size(r.max, Vec2::splat(c)),
+                        vec2(1.0, 1.0),
+                    ),
+                    (
+                        1,
+                        Rect::from_min_max(
+                            pos2(r.max.x - 4.0, r.min.y + c),
+                            pos2(r.max.x + 4.0, r.max.y - c),
+                        ),
+                        vec2(1.0, 0.0),
+                    ),
+                    (
+                        2,
+                        Rect::from_min_max(
+                            pos2(r.min.x + c, r.max.y - 4.0),
+                            pos2(r.max.x - c, r.max.y + 4.0),
+                        ),
+                        vec2(0.0, 1.0),
+                    ),
+                ];
+                for (k, zone, axis) in zones {
+                    let zr = cui.interact(zone, id.with(("resize", n.id, k)), Sense::drag());
+                    if zr.hovered() || zr.dragged() {
+                        ui.ctx().set_cursor_icon(match k {
+                            0 => egui::CursorIcon::ResizeNwSe,
+                            1 => egui::CursorIcon::ResizeHorizontal,
+                            _ => egui::CursorIcon::ResizeVertical,
+                        });
+                    }
+                    if zr.drag_started() {
+                        state.interaction.resize = Some(ResizeDrag {
+                            node: n.id,
+                            start: n.size,
+                            accum: Vec2::ZERO,
+                        });
+                    }
+                    let Some(drag) = state.interaction.resize.as_mut().filter(|d| d.node == n.id)
+                    else {
+                        continue;
+                    };
+                    if zr.dragged() {
+                        drag.accum += zr.drag_delta() * axis;
+                        let mut size = drag.start + drag.accum;
+                        if let Some(g) = o.snap_to_grid.filter(|g| *g > 0.0) {
+                            size = vec2((size.x / g).round() * g, (size.y / g).round() * g);
+                        }
+                        size = size.max(n.min_size);
+                        if let Some(max) = n.max_size {
+                            size = size.min(max);
+                        }
+                        if n.fixed_size != Some(size) {
+                            n.fixed_size = Some(size);
+                            resized.push((n.id, size, false));
+                        }
+                    }
+                    if zr.drag_stopped() {
+                        state.interaction.resize = None;
+                        resized.push((n.id, n.fixed_size.unwrap_or(n.size), true));
+                    }
+                }
+                // Corner grip marker.
+                let g = cui.painter();
+                for d in [4.0_f32, 8.0] {
+                    g.line_segment(
+                        [
+                            pos2(r.max.x - d, r.max.y - 1.5),
+                            pos2(r.max.x - 1.5, r.max.y - d),
+                        ],
+                        Stroke::new(1.5_f32, sel_color),
+                    );
+                }
+            }
+            for (node, size, finished) in resized {
+                events.push(FlowEvent::NodeResized {
+                    node,
+                    size,
+                    finished,
+                });
             }
         }
 
@@ -569,6 +751,7 @@ impl Flow {
                     state.interaction.connecting = Some(ConnectDrag {
                         node: n.id,
                         handle: h.id,
+                        reconnecting: None,
                     });
                 }
                 let valid_target = connecting.is_some_and(|from| {
@@ -589,7 +772,8 @@ impl Flow {
                 } else {
                     target_r
                 };
-                let alpha = alphas.get(&n.id).copied().unwrap_or(1.0);
+                let alpha = alphas.get(&n.id).copied().unwrap_or(1.0)
+                    * if node_dim(n.id) { DIM } else { 1.0 };
                 let fill = if active || valid_target {
                     sel_color
                 } else {
@@ -621,12 +805,55 @@ impl Flow {
             }
         }
 
+        // Grips on the ends of selected edges: drag one to another handle.
+        if o.edges_reconnectable && o.nodes_connectable && state.interaction.connecting.is_none() {
+            let mut start = None;
+            for (i, path, _) in &geoms {
+                let e = &state.edges[*i];
+                if !e.selected {
+                    continue;
+                }
+                let ends = [
+                    (path[0], (e.target, e.target_handle), 0u8),
+                    (*path.last().unwrap(), (e.source, e.source_handle), 1u8),
+                ];
+                for (pos, fixed, which) in ends {
+                    let hit = Rect::from_center_size(pos, Vec2::splat(2.0 * (HANDLE_RADIUS + 5.0)));
+                    let gr = cui.interact(hit, id.with(("grip", e.id, which)), Sense::drag());
+                    let r = if gr.hovered() {
+                        HANDLE_RADIUS + 4.5
+                    } else {
+                        HANDLE_RADIUS + 3.0
+                    };
+                    cp.circle_stroke(pos, r, Stroke::new(2.0_f32, sel_color));
+                    if gr.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                    }
+                    if gr.drag_started() {
+                        start = Some(ConnectDrag {
+                            node: fixed.0,
+                            handle: fixed.1,
+                            reconnecting: Some(e.id),
+                        });
+                    }
+                }
+            }
+            if start.is_some() {
+                state.interaction.connecting = start;
+            }
+        }
+
         if let Some(from) = state
             .interaction
             .connecting
             .as_ref()
             .map(|c| (c.node, c.handle))
         {
+            let reconnecting = state
+                .interaction
+                .connecting
+                .as_ref()
+                .and_then(|c| c.reconnecting);
             ui.ctx().request_repaint();
             let from_handle = find_handle(&handles, from.0, from.1);
             let from_rect = rects.get(&from.0);
@@ -651,13 +878,17 @@ impl Flow {
                     Some((_, h, p)) => (*p, h.side),
                     None => (pointer, opposite(fh.side)),
                 };
+                let preview_kind = reconnecting
+                    .and_then(|eid| state.edge(eid))
+                    .and_then(|e| e.kind)
+                    .unwrap_or(o.default_edge_kind);
                 let (s, ss, t, ts) = if fh.kind == HandleKind::Source {
                     (from_pos, fh.side, end, end_side)
                 } else {
                     (end, end_side, from_pos, fh.side)
                 };
                 cp.add(Shape::line(
-                    edge_path(o.default_edge_kind, s, ss, t, ts),
+                    edge_path(preview_kind, s, ss, t, ts),
                     Stroke::new(
                         2.0_f32,
                         if candidate.is_some() {
@@ -673,13 +904,29 @@ impl Flow {
                 if released || cancelled {
                     state.interaction.connecting = None;
                     if released && !cancelled {
-                        match candidate {
-                            Some((conn, _, _)) => {
+                        match (candidate, reconnecting) {
+                            (Some((conn, _, _)), Some(eid)) => {
+                                if let Some(e) = state.edge_mut(eid) {
+                                    let old = e.connection();
+                                    e.source = conn.source;
+                                    e.source_handle = conn.source_handle;
+                                    e.target = conn.target;
+                                    e.target_handle = conn.target_handle;
+                                    events.push(FlowEvent::Reconnected {
+                                        edge: eid,
+                                        old,
+                                        new: conn,
+                                    });
+                                }
+                            }
+                            // Dropped on nothing: the edge snaps back.
+                            (None, Some(_)) => {}
+                            (Some((conn, _, _)), None) => {
                                 if let Some(eid) = state.add_edge(conn, E::default()) {
                                     events.push(FlowEvent::Connected(eid));
                                 }
                             }
-                            None => events.push(FlowEvent::ConnectionDropped {
+                            (None, None) => events.push(FlowEvent::ConnectionDropped {
                                 node: from.0,
                                 handle: from.1,
                                 pos: pointer,
@@ -718,6 +965,37 @@ impl Flow {
             }
         }
 
+        if o.keyboard_shortcuts && hover.is_some() && !ui.ctx().wants_keyboard_input() {
+            use egui::Modifiers as M;
+            let (undo, redo, copy, cut, paste, dup) = ui.input_mut(|i| {
+                let evt =
+                    |i: &egui::InputState, f: fn(&egui::Event) -> bool| i.events.iter().any(f);
+                let redo = i.consume_key(M::COMMAND | M::SHIFT, Key::Z)
+                    || i.consume_key(M::COMMAND, Key::Y);
+                let undo = i.consume_key(M::COMMAND, Key::Z);
+                let copy =
+                    i.consume_key(M::COMMAND, Key::C) || evt(i, |e| matches!(e, egui::Event::Copy));
+                let cut =
+                    i.consume_key(M::COMMAND, Key::X) || evt(i, |e| matches!(e, egui::Event::Cut));
+                let paste = i.consume_key(M::COMMAND, Key::V)
+                    || evt(i, |e| matches!(e, egui::Event::Paste(_)));
+                let dup = i.consume_key(M::COMMAND, Key::D);
+                (undo, redo, copy, cut, paste, dup)
+            });
+            for (on, ev) in [
+                (undo, FlowEvent::UndoRequested),
+                (redo, FlowEvent::RedoRequested),
+                (copy, FlowEvent::CopyRequested),
+                (cut, FlowEvent::CutRequested),
+                (paste, FlowEvent::PasteRequested),
+                (dup, FlowEvent::DuplicateRequested),
+            ] {
+                if on {
+                    events.push(ev);
+                }
+            }
+        }
+
         // --- overlays -------------------------------------------------------
         if o.controls {
             controls(ui, id, canvas, state, &o);
@@ -741,6 +1019,46 @@ impl Flow {
             pane,
             nodes: node_resps,
             events,
+        }
+    }
+}
+
+fn draw_pulse_head(cp: &Painter, pos: Pos2, dir: Vec2, r: f32, color: Color32, shape: PulseShape) {
+    let normal = vec2(-dir.y, dir.x);
+    match shape {
+        PulseShape::Circle => {
+            cp.circle_filled(pos, r, color);
+        }
+        PulseShape::Square => {
+            cp.rect_filled(
+                Rect::from_center_size(pos, Vec2::splat(r * 1.8)),
+                1.0,
+                color,
+            );
+        }
+        PulseShape::Diamond => {
+            cp.add(Shape::convex_polygon(
+                vec![
+                    pos + dir * r * 1.4,
+                    pos + normal * r,
+                    pos - dir * r * 1.4,
+                    pos - normal * r,
+                ],
+                color,
+                Stroke::NONE,
+            ));
+        }
+        PulseShape::Arrow => {
+            cp.add(Shape::convex_polygon(
+                vec![
+                    pos + dir * r * 1.6,
+                    pos - dir * r + normal * r * 1.1,
+                    pos - dir * r * 0.4,
+                    pos - dir * r - normal * r * 1.1,
+                ],
+                color,
+                Stroke::NONE,
+            ));
         }
     }
 }
@@ -1088,6 +1406,224 @@ mod tests {
         assert_eq!(s.edges.len(), 1, "{events:?}");
         assert_eq!((s.edges[0].source, s.edges[0].target), (a, b));
         assert!(events.iter().any(|e| matches!(e, FlowEvent::Connected(_))));
+    }
+
+    /// Drag from `from` to `to` over a few frames and release; returns events.
+    fn drag(
+        ctx: &Context,
+        s: &mut FlowState<&'static str, ()>,
+        from: Pos2,
+        to: Pos2,
+    ) -> Vec<FlowEvent<&'static str, ()>> {
+        let btn = |pos, pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        run_frame(ctx, s, vec![Event::PointerMoved(from)], false);
+        run_frame(ctx, s, vec![btn(from, true)], false);
+        let mut events = Vec::new();
+        for i in 1..=6 {
+            let p = from + (to - from) * (i as f32 / 6.0);
+            events.extend(run_frame(ctx, s, vec![Event::PointerMoved(p)], false));
+        }
+        events.extend(run_frame(ctx, s, vec![btn(to, false)], false));
+        events
+    }
+
+    fn reconnect_setup() -> (
+        Context,
+        FlowState<&'static str, ()>,
+        (NodeId, NodeId, NodeId),
+        EdgeId,
+    ) {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(50.0, 100.0), "a");
+        let b = s.add_node(pos2(400.0, 100.0), "b");
+        let c = s.add_node(pos2(400.0, 300.0), "c");
+        let e = s.connect(a, b, ()).unwrap();
+        for _ in 0..3 {
+            run_frame(&ctx, &mut s, vec![], false);
+        }
+        s.edge_mut(e).unwrap().selected = true;
+        run_frame(&ctx, &mut s, vec![], false);
+        (ctx, s, (a, b, c), e)
+    }
+
+    fn target_pos(s: &FlowState<&'static str, ()>, n: NodeId) -> Pos2 {
+        Handle::target(Handle::DEFAULT_TARGET, Side::Left).position(s.node(n).unwrap().rect())
+    }
+
+    #[test]
+    fn dragging_an_edge_end_reconnects_it() {
+        let (ctx, mut s, (a, _, c), e) = reconnect_setup();
+        let (from, to) = (target_pos(&s, b_of(&s, e)), target_pos(&s, c));
+        let events = drag(&ctx, &mut s, from, to);
+        let edge = s.edge(e).unwrap();
+        assert_eq!((edge.source, edge.target), (a, c), "{events:?}");
+        assert_eq!(s.edges.len(), 1);
+        assert!(events.iter().any(|ev| matches!(
+            ev,
+            FlowEvent::Reconnected { edge, old, new }
+                if *edge == e && old.target != new.target && new.target == c
+        )));
+    }
+
+    fn b_of(s: &FlowState<&'static str, ()>, e: EdgeId) -> NodeId {
+        s.edge(e).unwrap().target
+    }
+
+    #[test]
+    fn dragging_the_corner_grip_resizes_a_selected_node() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(100.0, 100.0), "a");
+        for _ in 0..3 {
+            run_frame(&ctx, &mut s, vec![], false);
+        }
+        s.node_mut(a).unwrap().selected = true;
+        run_frame(&ctx, &mut s, vec![], false);
+        let before = s.node(a).unwrap().size;
+        let corner = s.node(a).unwrap().rect().max;
+
+        let events = drag(&ctx, &mut s, corner, corner + vec2(60.0, 40.0));
+        let n = s.node(a).unwrap();
+        assert!(n.fixed_size.is_some(), "{events:?}");
+        assert!(
+            (n.size.x - (before.x + 60.0)).abs() < 2.0,
+            "{:?} vs {before:?}",
+            n.size
+        );
+        assert!(n.size.y > before.y + 30.0);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, FlowEvent::NodeResized { finished: true, .. }))
+        );
+        assert!(events.iter().any(|e| matches!(
+            e,
+            FlowEvent::NodeResized {
+                finished: false,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn resizing_respects_min_size_and_unselected_nodes_have_no_grips() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(100.0, 100.0), "a");
+        s.node_mut(a).unwrap().min_size = vec2(120.0, 80.0);
+        for _ in 0..3 {
+            run_frame(&ctx, &mut s, vec![], false);
+        }
+        // Not selected: dragging the corner moves the node instead of resizing.
+        let corner = s.node(a).unwrap().rect().max;
+        drag(
+            &ctx,
+            &mut s,
+            corner - vec2(2.0, 2.0),
+            corner + vec2(30.0, 30.0),
+        );
+        assert!(s.node(a).unwrap().fixed_size.is_none());
+
+        s.node_mut(a).unwrap().selected = true;
+        run_frame(&ctx, &mut s, vec![], false);
+        let corner = s.node(a).unwrap().rect().max;
+        drag(&ctx, &mut s, corner, corner - vec2(200.0, 200.0));
+        let n = s.node(a).unwrap();
+        assert_eq!(n.fixed_size, Some(vec2(120.0, 80.0)));
+    }
+
+    #[test]
+    fn keyboard_shortcuts_become_events() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        s.add_node(pos2(100.0, 100.0), "a");
+        for _ in 0..2 {
+            run_frame(
+                &ctx,
+                &mut s,
+                vec![Event::PointerMoved(pos2(400.0, 300.0))],
+                false,
+            );
+        }
+        let key = |key, modifiers| Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        let ctrl = egui::Modifiers::COMMAND;
+        let shift_ctrl = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+        for (ev, want) in [
+            (key(egui::Key::Z, ctrl), 0),
+            (key(egui::Key::Z, shift_ctrl), 1),
+            (key(egui::Key::C, ctrl), 2),
+            (key(egui::Key::V, ctrl), 3),
+            (key(egui::Key::D, ctrl), 4),
+        ] {
+            let out = run_frame(&ctx, &mut s, vec![ev], false);
+            let hit = out.iter().position(|e| {
+                matches!(
+                    (want, e),
+                    (0, FlowEvent::UndoRequested)
+                        | (1, FlowEvent::RedoRequested)
+                        | (2, FlowEvent::CopyRequested)
+                        | (3, FlowEvent::PasteRequested)
+                        | (4, FlowEvent::DuplicateRequested)
+                )
+            });
+            assert!(hit.is_some(), "shortcut {want}: {out:?}");
+            assert_eq!(out.len(), 1, "exactly one request: {out:?}");
+        }
+    }
+
+    #[test]
+    fn dropping_an_edge_end_on_nothing_snaps_back() {
+        let (ctx, mut s, (_a, b, _c), e) = reconnect_setup();
+        let from = target_pos(&s, b);
+        let events = drag(&ctx, &mut s, from, pos2(650.0, 520.0));
+        assert_eq!(s.edge(e).unwrap().target, b, "{events:?}");
+        assert!(!events.iter().any(|ev| matches!(
+            ev,
+            FlowEvent::Reconnected { .. } | FlowEvent::ConnectionDropped { .. }
+        )));
+    }
+
+    #[test]
+    fn pulse_arrival_is_reported_with_its_tag() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(0.0, 0.0), "a");
+        let b = s.add_node(pos2(300.0, 100.0), "b");
+        let e = s.connect(a, b, ()).unwrap();
+        run_frame_at(&ctx, &mut s, vec![], false, Some(0.0), true);
+        s.pulse_edge_reverse(
+            e,
+            PulseStyle {
+                duration: 0.5,
+                tag: 42,
+                shape: crate::PulseShape::Arrow,
+                ..Default::default()
+            },
+        );
+        run_frame_at(&ctx, &mut s, vec![], false, Some(1.0), true);
+        let mid = run_frame_at(&ctx, &mut s, vec![], false, Some(1.25), true);
+        assert!(
+            !mid.iter()
+                .any(|ev| matches!(ev, FlowEvent::PulseArrived { .. }))
+        );
+        let end = run_frame_at(&ctx, &mut s, vec![], false, Some(2.0), true);
+        assert!(end.iter().any(|ev| matches!(
+            ev,
+            FlowEvent::PulseArrived { edge, tag: 42, direction: PulseDirection::Reverse }
+                if *edge == e
+        )));
     }
 
     #[test]

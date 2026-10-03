@@ -1,7 +1,8 @@
 //! Things that happened during a frame.
 
-use egui::{Pos2, Response};
+use egui::{Pos2, Response, Vec2};
 
+use crate::state::PulseDirection;
 use crate::types::*;
 
 /// An interaction the application may want to react to.
@@ -18,6 +19,38 @@ pub enum FlowEvent<N, E> {
     Connected(EdgeId),
     /// A connection drag was released without creating an edge. `pos` is the
     /// release point in flow coordinates; useful for "drop to add node".
+    /// An existing edge's end was dragged onto another handle. The edge already
+    /// carries `new`; mirror it into your own model.
+    Reconnected {
+        edge: EdgeId,
+        old: Connection,
+        new: Connection,
+    },
+    /// A node's size changed by dragging a resize grip. `finished` is set on
+    /// the last event, when the pointer is released.
+    NodeResized {
+        node: NodeId,
+        size: Vec2,
+        finished: bool,
+    },
+    /// Ctrl/Cmd+Z. Handled for you by [`Editor::process`](crate::Editor::process).
+    UndoRequested,
+    /// Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y.
+    RedoRequested,
+    /// Ctrl/Cmd+C.
+    CopyRequested,
+    /// Ctrl/Cmd+X.
+    CutRequested,
+    /// Ctrl/Cmd+V.
+    PasteRequested,
+    /// Ctrl/Cmd+D.
+    DuplicateRequested,
+    /// A pulse finished its leg along `edge`. `tag` is [`PulseStyle::tag`](crate::PulseStyle::tag).
+    PulseArrived {
+        edge: EdgeId,
+        tag: u64,
+        direction: PulseDirection,
+    },
     ConnectionDropped {
         node: NodeId,
         handle: HandleId,
