@@ -3,12 +3,14 @@
 //!
 //! * select an edge, then drag the ring on either end to another handle
 //! * "Send frame" animates ECU → bus → gateway → bus → ECU as one route
+//! * select a node and drag its corner or edges to resize it
+//! * Ctrl/Cmd+Z / Shift+Z undo and redo, Ctrl/Cmd+C / V / X / D copy, paste, cut, duplicate
 //! * "Highlight connected" dims everything unrelated to the selected/hovered node
 
 use egui::{Color32, Ui};
 use egui_flow::{
-    Background, EdgeId, EdgeKind, Flow, FlowEvent, FlowOptions, FlowState, FlowViewer, Handle,
-    LineStyle, Node, NodeId, PulseShape, PulseStyle, Side,
+    Background, EdgeId, EdgeKind, Editor, Flow, FlowEvent, FlowOptions, FlowState, FlowViewer,
+    Handle, LineStyle, Node, NodeId, PulseShape, PulseStyle, Side,
 };
 
 #[derive(Clone, Copy, PartialEq)]
@@ -18,6 +20,7 @@ pub enum Role {
     Gateway,
 }
 
+#[derive(Clone)]
 pub struct Data {
     pub role: Role,
     pub name: &'static str,
@@ -66,6 +69,7 @@ impl FlowViewer<Data, ()> for Viewer {
 
 pub struct App {
     pub state: FlowState<Data, ()>,
+    pub editor: Editor<Data, ()>,
     pub highlight: bool,
     pub engine: NodeId,
     pub route: Vec<EdgeId>,
@@ -73,6 +77,8 @@ pub struct App {
     pub nodes: Vec<(&'static str, NodeId)>,
     pub arrived: u32,
     pub log: String,
+    /// Where the canvas sits on screen (set each frame; handy for test drivers).
+    pub canvas: egui::Rect,
 }
 
 impl Default for App {
@@ -111,6 +117,7 @@ impl App {
         s.edge_mut(e4).unwrap().line_style = LineStyle::Dashed;
         s.fit_view();
         Self {
+            editor: Editor::new(&s),
             state: s,
             highlight: false,
             engine,
@@ -125,7 +132,8 @@ impl App {
                 ("dash", dash),
             ],
             arrived: 0,
-            log: "select an edge, then drag a ring on its end to another handle".into(),
+            canvas: egui::Rect::NOTHING,
+            log: "select a node: drag its corner to resize; Ctrl+C / Ctrl+V copy and paste; Ctrl+Z undoes".into(),
         }
     }
 
@@ -148,6 +156,19 @@ impl App {
     pub fn ui(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(self.editor.can_undo(), egui::Button::new("Undo"))
+                    .clicked()
+                {
+                    self.editor.undo(&mut self.state);
+                }
+                if ui
+                    .add_enabled(self.editor.can_redo(), egui::Button::new("Redo"))
+                    .clicked()
+                {
+                    self.editor.redo(&mut self.state);
+                }
+                ui.separator();
                 if ui.button("Send frame").clicked() {
                     self.send_frame(0.9, 1);
                 }
@@ -162,6 +183,7 @@ impl App {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
+                self.canvas = ui.max_rect();
                 let opts = FlowOptions {
                     background: Background::Dots,
                     highlight_connected: self.highlight,
@@ -171,6 +193,7 @@ impl App {
                 let out = Flow::new("gateway")
                     .options(opts)
                     .show(ui, &mut self.state, &mut Viewer);
+                self.editor.process(&mut self.state, &out.events);
                 for event in out.events {
                     match event {
                         FlowEvent::Reconnected { new, .. } => {

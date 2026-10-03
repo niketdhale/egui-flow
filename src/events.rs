@@ -1,6 +1,6 @@
 //! Things that happened during a frame.
 
-use egui::{Pos2, Response};
+use egui::{Pos2, Response, Vec2};
 
 use crate::state::PulseDirection;
 use crate::types::*;
@@ -26,6 +26,25 @@ pub enum FlowEvent<N, E> {
         old: Connection,
         new: Connection,
     },
+    /// A node's size changed by dragging a resize grip. `finished` is set on
+    /// the last event, when the pointer is released.
+    NodeResized {
+        node: NodeId,
+        size: Vec2,
+        finished: bool,
+    },
+    /// Ctrl/Cmd+Z. Handled for you by [`Editor::process`](crate::Editor::process).
+    UndoRequested,
+    /// Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y.
+    RedoRequested,
+    /// Ctrl/Cmd+C.
+    CopyRequested,
+    /// Ctrl/Cmd+X.
+    CutRequested,
+    /// Ctrl/Cmd+V.
+    PasteRequested,
+    /// Ctrl/Cmd+D.
+    DuplicateRequested,
     /// A pulse finished its leg along `edge`. `tag` is [`PulseStyle::tag`](crate::PulseStyle::tag).
     PulseArrived {
         edge: EdgeId,

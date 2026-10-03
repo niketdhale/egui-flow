@@ -20,6 +20,13 @@ pub(crate) struct Interaction {
     pub node_drag: Option<NodeDrag>,
     pub box_select: Option<Pos2>,
     pub connecting: Option<ConnectDrag>,
+    pub resize: Option<ResizeDrag>,
+}
+
+pub(crate) struct ResizeDrag {
+    pub node: NodeId,
+    pub start: Vec2,
+    pub accum: Vec2,
 }
 
 pub(crate) struct NodeDrag {
@@ -75,6 +82,14 @@ pub enum PulseOverflow {
     Drop,
     /// Remove the oldest pulse on that edge to make room.
     ReplaceOldest,
+}
+
+/// Nodes and the edges between them, copied out of a [`FlowState`] by
+/// [`copy_selected`](FlowState::copy_selected).
+#[derive(Clone, Debug)]
+pub struct Clipboard<N, E> {
+    pub nodes: Vec<Node<N>>,
+    pub edges: Vec<Edge<E>>,
 }
 
 /// Appearance of a [`FlowState::pulse_edge`] particle.
@@ -472,6 +487,65 @@ impl<N, E> FlowState<N, E> {
     }
 }
 
+impl<N: Clone, E: Clone> FlowState<N, E> {
+    /// Copy the selected nodes and every edge between two of them. `None` if
+    /// no node is selected.
+    pub fn copy_selected(&self) -> Option<Clipboard<N, E>> {
+        let nodes: Vec<_> = self.nodes.iter().filter(|n| n.selected).cloned().collect();
+        if nodes.is_empty() {
+            return None;
+        }
+        let ids: HashSet<_> = nodes.iter().map(|n| n.id).collect();
+        let edges = self
+            .edges
+            .iter()
+            .filter(|e| ids.contains(&e.source) && ids.contains(&e.target))
+            .cloned()
+            .collect();
+        Some(Clipboard { nodes, edges })
+    }
+
+    /// Insert a copy of `clipboard`, moved by `offset`, with fresh ids and the
+    /// edges re-pointed at the new nodes. The pasted nodes become the
+    /// selection. Returns their ids.
+    pub fn paste(&mut self, clipboard: &Clipboard<N, E>, offset: Vec2) -> Vec<NodeId> {
+        self.clear_selection();
+        let mut map = HashMap::new();
+        let mut new_ids = Vec::new();
+        for n in &clipboard.nodes {
+            let mut node = n.clone();
+            node.id = NodeId(self.next_node);
+            self.next_node += 1;
+            node.position += offset;
+            node.selected = true;
+            map.insert(n.id, node.id);
+            new_ids.push(node.id);
+            self.nodes.push(node);
+        }
+        for e in &clipboard.edges {
+            let (Some(&source), Some(&target)) = (map.get(&e.source), map.get(&e.target)) else {
+                continue;
+            };
+            let mut edge = e.clone();
+            edge.id = EdgeId(self.next_edge);
+            self.next_edge += 1;
+            edge.source = source;
+            edge.target = target;
+            edge.selected = false;
+            self.edges.push(edge);
+        }
+        new_ids
+    }
+
+    /// Copy the selection and paste it straight away, shifted by `offset`.
+    pub fn duplicate_selected(&mut self, offset: Vec2) -> Vec<NodeId> {
+        match self.copy_selected() {
+            Some(cb) => self.paste(&cb, offset),
+            None => Vec::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,6 +662,38 @@ mod tests {
         let before = s.pulses.len();
         assert!(!s.pulse_route(gw, &[up], style));
         assert_eq!(s.pulses.len(), before);
+    }
+
+    #[test]
+    fn copy_paste_remaps_ids_and_edges() {
+        let (mut s, a, b) = two_nodes();
+        let c = s.add_node(pos2(0.0, 100.0), ());
+        s.connect(a, b, ());
+        s.connect(b, c, ());
+        s.node_mut(a).unwrap().selected = true;
+        s.node_mut(b).unwrap().selected = true;
+        let cb = s.copy_selected().unwrap();
+        assert_eq!(
+            (cb.nodes.len(), cb.edges.len()),
+            (2, 1),
+            "only the inner edge"
+        );
+
+        let new = s.paste(&cb, vec2(10.0, 20.0));
+        assert_eq!(new.len(), 2);
+        assert_eq!(s.nodes.len(), 5);
+        assert_eq!(s.edges.len(), 3);
+        assert_eq!(s.selected_nodes(), new, "pasted nodes become the selection");
+        let pasted = s.edges.last().unwrap();
+        assert!(new.contains(&pasted.source) && new.contains(&pasted.target));
+        assert_eq!(s.node(new[0]).unwrap().position, pos2(10.0, 20.0));
+        assert!(s.edges.iter().map(|e| e.id).collect::<HashSet<_>>().len() == 3);
+    }
+
+    #[test]
+    fn copy_needs_a_selection() {
+        let (s, _, _) = two_nodes();
+        assert!(s.copy_selected().is_none());
     }
 
     #[test]

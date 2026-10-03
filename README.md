@@ -26,6 +26,9 @@ cargo run --example icons   # built-in icon gallery
 | Animated edges | `edge.animated = true` marches dashes (`animation_speed`, negative reverses) |
 | Icons | built-in `Icon` set (check, close, plus, minus, chevrons, triangles, arrows) via `icon(ui, Icon::Check, 14.0)` / `icon_button(..)`; painter-drawn, so no font, SVG or asset is needed and they follow the text colour |
 | Particles along edges | `state.pulse_edge(id, PulseStyle::default())` sends a dot source → target |
+| Resize nodes | select a node and drag its corner or right/bottom edge; `Node::{fixed_size, min_size, max_size, resizable}`, `FlowOptions::nodes_resizable`, snaps to `snap_to_grid`; `FlowEvent::NodeResized { node, size, finished }` |
+| Undo / redo | `Editor::new(&state)` then `editor.process(&mut state, &out.events)` each frame; Ctrl/Cmd+Z, Shift+Z / Y; or call `editor.undo(..)` / `redo(..)` from buttons |
+| Copy / paste / duplicate | Ctrl/Cmd+C, X, V, D handled by the same `Editor`; or `state.copy_selected()`, `state.paste(&clipboard, offset)`, `state.duplicate_selected(offset)` (edges between copied nodes come along, ids are remapped) |
 | Reconnect edges | select an edge, drag the ring on either end to another handle; the edge snaps back if dropped on nothing; `FlowEvent::Reconnected { edge, old, new }`; `FlowOptions::edges_reconnectable` |
 | Highlight connected | `FlowOptions::highlight_connected` / `Flow::highlight_connected(true)` dims everything not connected to the selected or hovered node |
 | Route pulses | `state.pulse_route(start_node, &[edge, edge, ..], style)` animates a multi-hop route leg by leg, picking forward/reverse per edge |
@@ -89,6 +92,29 @@ state.max_pulses_per_edge = 16;
 state.pulse_overflow = PulseOverflow::ReplaceOldest; // newest pulse wins under heavy traffic
 ```
 
+## Undo, redo, copy and paste
+
+```rust
+use egui_flow::Editor;
+
+// `N` and `E` must be `Clone`.
+let mut editor = Editor::new(&state);
+
+// every frame
+let out = Flow::new("graph").show(ui, &mut state, &mut viewer);
+editor.process(&mut state, &out.events);
+
+if ui.add_enabled(editor.can_undo(), egui::Button::new("Undo")).clicked() {
+    editor.undo(&mut state);
+}
+```
+
+A history step is recorded after a node drag, connect, reconnect, delete, resize, paste, cut or duplicate. Changes you make yourself (editing node data, adding nodes in code) are not seen; call `editor.commit(&state)` after them to make them undoable. The shortcuts only fire while the pointer is over the canvas and no text field has focus; turn them off with `FlowOptions { keyboard_shortcuts: false, .. }`.
+
+## Resizing nodes
+
+Selected nodes show grips on the corner and the right and bottom edges. Dragging sets `node.fixed_size` (width exact, height a minimum, so the content never gets clipped); set it yourself, or build a node with `Node::new(..).with_size(vec2(220.0, 120.0))`. Clear it with `node.fixed_size = None` to go back to sizing from the content. Limit the range with `min_size` / `max_size`, or opt a node out with `resizable = false`.
+
 ## Reconnecting and highlighting
 
 ```rust
@@ -146,5 +172,6 @@ Everything above that moves can be disabled at once with `FlowOptions { animate:
 
 * Content scales with zoom by rasterising at 1× and transforming, so text is soft when zoomed in far (same as `egui::Scene`).
 * Selectable labels are disabled inside nodes so dragging on text moves the node; re-enable in `node_ui` if needed.
+* Resizing sets a size; it does not make node content scale.
 * No node exit animation (removed nodes vanish immediately) or per-edge dash patterns.
-* Not yet implemented: re-connecting existing edges by dragging their ends, node resizing, nested/grouped nodes, auto-layout.
+* Not yet implemented: nested/grouped nodes, auto-layout.

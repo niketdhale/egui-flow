@@ -13,7 +13,7 @@ use egui::{
 use crate::events::{FlowEvent, FlowResponse};
 use crate::geometry::{dist_to_path, edge_path, end_direction, path_midpoint, point_at};
 use crate::options::{Background, FlowOptions};
-use crate::state::{ConnectDrag, FlowState, NodeDrag, PulseDirection, PulseShape};
+use crate::state::{ConnectDrag, FlowState, NodeDrag, PulseDirection, PulseShape, ResizeDrag};
 use crate::types::*;
 use crate::viewer::FlowViewer;
 
@@ -593,7 +593,10 @@ impl Flow {
         for i in 0..state.nodes.len() {
             let node = &mut state.nodes[i];
             let frame = viewer.node_frame(&cui, node);
-            let content = Rect::from_min_size(node.position, vec2(MAX_NODE_WIDTH, 10_000.0));
+            let fixed = node.fixed_size;
+            let content_w = fixed.map_or(MAX_NODE_WIDTH, |f| f.x.max(MAX_NODE_WIDTH));
+            let content = Rect::from_min_size(node.position, vec2(content_w, 10_000.0));
+            let margin = frame.total_margin().sum();
             let inner = cui.scope_builder(
                 UiBuilder::new()
                     .id_salt(("flow_node", node.id))
@@ -606,7 +609,14 @@ impl Flow {
                     if a < 1.0 {
                         ui.set_opacity(a);
                     }
-                    frame.show(ui, |ui| viewer.node_ui(ui, node))
+                    frame.show(ui, |ui| {
+                        if let Some(f) = fixed {
+                            let inner = (f - margin).max(Vec2::ZERO);
+                            ui.set_width(inner.x);
+                            ui.set_min_height(inner.y);
+                        }
+                        viewer.node_ui(ui, node)
+                    })
                 },
             );
             let rect = inner.inner.response.rect;
@@ -621,6 +631,96 @@ impl Flow {
                     ),
                     StrokeKind::Outside,
                 );
+            }
+        }
+
+        // --- resize grips on selected nodes (below handles, which win overlaps)
+        if o.nodes_resizable {
+            let mut resized: Vec<(NodeId, Vec2, bool)> = Vec::new();
+            for n in state.nodes.iter_mut().filter(|n| n.selected && n.resizable) {
+                let r = n.rect();
+                let c = 14.0;
+                let zones = [
+                    (
+                        0u8,
+                        Rect::from_center_size(r.max, Vec2::splat(c)),
+                        vec2(1.0, 1.0),
+                    ),
+                    (
+                        1,
+                        Rect::from_min_max(
+                            pos2(r.max.x - 4.0, r.min.y + c),
+                            pos2(r.max.x + 4.0, r.max.y - c),
+                        ),
+                        vec2(1.0, 0.0),
+                    ),
+                    (
+                        2,
+                        Rect::from_min_max(
+                            pos2(r.min.x + c, r.max.y - 4.0),
+                            pos2(r.max.x - c, r.max.y + 4.0),
+                        ),
+                        vec2(0.0, 1.0),
+                    ),
+                ];
+                for (k, zone, axis) in zones {
+                    let zr = cui.interact(zone, id.with(("resize", n.id, k)), Sense::drag());
+                    if zr.hovered() || zr.dragged() {
+                        ui.ctx().set_cursor_icon(match k {
+                            0 => egui::CursorIcon::ResizeNwSe,
+                            1 => egui::CursorIcon::ResizeHorizontal,
+                            _ => egui::CursorIcon::ResizeVertical,
+                        });
+                    }
+                    if zr.drag_started() {
+                        state.interaction.resize = Some(ResizeDrag {
+                            node: n.id,
+                            start: n.size,
+                            accum: Vec2::ZERO,
+                        });
+                    }
+                    let Some(drag) = state.interaction.resize.as_mut().filter(|d| d.node == n.id)
+                    else {
+                        continue;
+                    };
+                    if zr.dragged() {
+                        drag.accum += zr.drag_delta() * axis;
+                        let mut size = drag.start + drag.accum;
+                        if let Some(g) = o.snap_to_grid.filter(|g| *g > 0.0) {
+                            size = vec2((size.x / g).round() * g, (size.y / g).round() * g);
+                        }
+                        size = size.max(n.min_size);
+                        if let Some(max) = n.max_size {
+                            size = size.min(max);
+                        }
+                        if n.fixed_size != Some(size) {
+                            n.fixed_size = Some(size);
+                            resized.push((n.id, size, false));
+                        }
+                    }
+                    if zr.drag_stopped() {
+                        state.interaction.resize = None;
+                        resized.push((n.id, n.fixed_size.unwrap_or(n.size), true));
+                    }
+                }
+                // Corner grip marker.
+                let g = cui.painter();
+                for d in [4.0_f32, 8.0] {
+                    g.line_segment(
+                        [
+                            pos2(r.max.x - d, r.max.y - 1.5),
+                            pos2(r.max.x - 1.5, r.max.y - d),
+                        ],
+                        Stroke::new(1.5_f32, sel_color),
+                    );
+                }
+            }
+            for (node, size, finished) in resized {
+                events.push(FlowEvent::NodeResized {
+                    node,
+                    size,
+                    finished,
+                });
             }
         }
 
@@ -862,6 +962,37 @@ impl Flow {
             let (nodes, edges) = state.delete_selected();
             if !nodes.is_empty() || !edges.is_empty() {
                 events.push(FlowEvent::Deleted { nodes, edges });
+            }
+        }
+
+        if o.keyboard_shortcuts && hover.is_some() && !ui.ctx().wants_keyboard_input() {
+            use egui::Modifiers as M;
+            let (undo, redo, copy, cut, paste, dup) = ui.input_mut(|i| {
+                let evt =
+                    |i: &egui::InputState, f: fn(&egui::Event) -> bool| i.events.iter().any(f);
+                let redo = i.consume_key(M::COMMAND | M::SHIFT, Key::Z)
+                    || i.consume_key(M::COMMAND, Key::Y);
+                let undo = i.consume_key(M::COMMAND, Key::Z);
+                let copy =
+                    i.consume_key(M::COMMAND, Key::C) || evt(i, |e| matches!(e, egui::Event::Copy));
+                let cut =
+                    i.consume_key(M::COMMAND, Key::X) || evt(i, |e| matches!(e, egui::Event::Cut));
+                let paste = i.consume_key(M::COMMAND, Key::V)
+                    || evt(i, |e| matches!(e, egui::Event::Paste(_)));
+                let dup = i.consume_key(M::COMMAND, Key::D);
+                (undo, redo, copy, cut, paste, dup)
+            });
+            for (on, ev) in [
+                (undo, FlowEvent::UndoRequested),
+                (redo, FlowEvent::RedoRequested),
+                (copy, FlowEvent::CopyRequested),
+                (cut, FlowEvent::CutRequested),
+                (paste, FlowEvent::PasteRequested),
+                (dup, FlowEvent::DuplicateRequested),
+            ] {
+                if on {
+                    events.push(ev);
+                }
             }
         }
 
@@ -1342,6 +1473,114 @@ mod tests {
 
     fn b_of(s: &FlowState<&'static str, ()>, e: EdgeId) -> NodeId {
         s.edge(e).unwrap().target
+    }
+
+    #[test]
+    fn dragging_the_corner_grip_resizes_a_selected_node() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(100.0, 100.0), "a");
+        for _ in 0..3 {
+            run_frame(&ctx, &mut s, vec![], false);
+        }
+        s.node_mut(a).unwrap().selected = true;
+        run_frame(&ctx, &mut s, vec![], false);
+        let before = s.node(a).unwrap().size;
+        let corner = s.node(a).unwrap().rect().max;
+
+        let events = drag(&ctx, &mut s, corner, corner + vec2(60.0, 40.0));
+        let n = s.node(a).unwrap();
+        assert!(n.fixed_size.is_some(), "{events:?}");
+        assert!(
+            (n.size.x - (before.x + 60.0)).abs() < 2.0,
+            "{:?} vs {before:?}",
+            n.size
+        );
+        assert!(n.size.y > before.y + 30.0);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, FlowEvent::NodeResized { finished: true, .. }))
+        );
+        assert!(events.iter().any(|e| matches!(
+            e,
+            FlowEvent::NodeResized {
+                finished: false,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn resizing_respects_min_size_and_unselected_nodes_have_no_grips() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(100.0, 100.0), "a");
+        s.node_mut(a).unwrap().min_size = vec2(120.0, 80.0);
+        for _ in 0..3 {
+            run_frame(&ctx, &mut s, vec![], false);
+        }
+        // Not selected: dragging the corner moves the node instead of resizing.
+        let corner = s.node(a).unwrap().rect().max;
+        drag(
+            &ctx,
+            &mut s,
+            corner - vec2(2.0, 2.0),
+            corner + vec2(30.0, 30.0),
+        );
+        assert!(s.node(a).unwrap().fixed_size.is_none());
+
+        s.node_mut(a).unwrap().selected = true;
+        run_frame(&ctx, &mut s, vec![], false);
+        let corner = s.node(a).unwrap().rect().max;
+        drag(&ctx, &mut s, corner, corner - vec2(200.0, 200.0));
+        let n = s.node(a).unwrap();
+        assert_eq!(n.fixed_size, Some(vec2(120.0, 80.0)));
+    }
+
+    #[test]
+    fn keyboard_shortcuts_become_events() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        s.add_node(pos2(100.0, 100.0), "a");
+        for _ in 0..2 {
+            run_frame(
+                &ctx,
+                &mut s,
+                vec![Event::PointerMoved(pos2(400.0, 300.0))],
+                false,
+            );
+        }
+        let key = |key, modifiers| Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        let ctrl = egui::Modifiers::COMMAND;
+        let shift_ctrl = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+        for (ev, want) in [
+            (key(egui::Key::Z, ctrl), 0),
+            (key(egui::Key::Z, shift_ctrl), 1),
+            (key(egui::Key::C, ctrl), 2),
+            (key(egui::Key::V, ctrl), 3),
+            (key(egui::Key::D, ctrl), 4),
+        ] {
+            let out = run_frame(&ctx, &mut s, vec![ev], false);
+            let hit = out.iter().position(|e| {
+                matches!(
+                    (want, e),
+                    (0, FlowEvent::UndoRequested)
+                        | (1, FlowEvent::RedoRequested)
+                        | (2, FlowEvent::CopyRequested)
+                        | (3, FlowEvent::PasteRequested)
+                        | (4, FlowEvent::DuplicateRequested)
+                )
+            });
+            assert!(hit.is_some(), "shortcut {want}: {out:?}");
+            assert_eq!(out.len(), 1, "exactly one request: {out:?}");
+        }
     }
 
     #[test]

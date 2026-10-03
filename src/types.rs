@@ -165,6 +165,16 @@ pub struct Node<D> {
     /// Size in flow coordinates. Measured from the rendered content every
     /// frame, so this is only an initial estimate for the first frame.
     pub size: Vec2,
+    /// Size set by resizing (or by you). `None` lets the content decide. The
+    /// width is applied exactly, the height as a minimum, so a node never
+    /// shrinks below its content.
+    pub fixed_size: Option<Vec2>,
+    /// Smallest size a resize drag can reach.
+    pub min_size: Vec2,
+    /// Largest size a resize drag can reach.
+    pub max_size: Option<Vec2>,
+    /// Show resize grips when the node is selected.
+    pub resizable: bool,
     pub data: D,
     pub selected: bool,
     pub draggable: bool,
@@ -178,12 +188,22 @@ impl<D> Node<D> {
             id,
             position,
             size: vec2(150.0, 40.0),
+            fixed_size: None,
+            min_size: vec2(60.0, 30.0),
+            max_size: None,
+            resizable: true,
             data,
             selected: false,
             draggable: true,
             connectable: true,
             deletable: true,
         }
+    }
+
+    /// Start with a fixed size instead of sizing to the content.
+    pub fn with_size(mut self, size: Vec2) -> Self {
+        self.fixed_size = Some(size);
+        self
     }
 
     pub fn rect(&self) -> Rect {
