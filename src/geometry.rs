@@ -1,7 +1,7 @@
 //! Edge routing. Every edge is reduced to a polyline, which is used both for
 //! drawing and for hit-testing.
 
-use egui::{Pos2, Vec2, pos2};
+use egui::{Pos2, Rect, Vec2, pos2, vec2};
 
 use crate::types::{EdgeKind, Side};
 
@@ -126,20 +126,6 @@ pub fn dist_to_path(p: Pos2, path: &[Pos2]) -> f32 {
         .fold(f32::INFINITY, f32::min)
 }
 
-/// Point halfway along the polyline (by length), for label placement.
-pub fn path_midpoint(path: &[Pos2]) -> Pos2 {
-    let total: f32 = path.windows(2).map(|w| (w[1] - w[0]).length()).sum();
-    let mut left = total / 2.0;
-    for w in path.windows(2) {
-        let len = (w[1] - w[0]).length();
-        if left <= len && len > 0.0 {
-            return w[0] + (w[1] - w[0]) * (left / len);
-        }
-        left -= len;
-    }
-    path.last().copied().unwrap_or(Pos2::ZERO)
-}
-
 /// Point `frac` (0..=1) of the way along the polyline, by length.
 pub fn point_at(path: &[Pos2], frac: f32) -> Pos2 {
     let total: f32 = path.windows(2).map(|w| (w[1] - w[0]).length()).sum();
@@ -221,7 +207,109 @@ mod tests {
 
     #[test]
     fn midpoint_of_line() {
-        let m = path_midpoint(&[pos2(0.0, 0.0), pos2(10.0, 0.0), pos2(10.0, 10.0)]);
+        let m = point_at(&[pos2(0.0, 0.0), pos2(10.0, 0.0), pos2(10.0, 10.0)], 0.5);
         assert_eq!(m, pos2(10.0, 0.0));
+    }
+}
+
+/// Direction of travel at the start of a path.
+pub fn start_direction(path: &[Pos2]) -> Vec2 {
+    path.windows(2)
+        .map(|w| w[1] - w[0])
+        .find(|d| d.length_sq() > 1e-6)
+        .map(|d| d.normalized())
+        .unwrap_or(Vec2::X)
+}
+
+/// A line to draw while dragging nodes: a vertical one at `x = at` or a
+/// horizontal one at `y = at`, spanning `from..to` along the other axis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Guide {
+    pub vertical: bool,
+    pub at: f32,
+    pub from: f32,
+    pub to: f32,
+}
+
+/// Offset that snaps `group` onto the closest edge/centre line of any of
+/// `others` within `threshold`, per axis, plus the guide lines to draw.
+pub(crate) fn align_to(group: Rect, others: &[Rect], threshold: f32) -> (Vec2, Vec<Guide>) {
+    let lines = |lo: f32, mid: f32, hi: f32| [lo, mid, hi];
+    let mut best: [Option<(f32, f32, Rect)>; 2] = [None, None];
+    for other in others {
+        let mine = [
+            lines(group.min.x, group.center().x, group.max.x),
+            lines(group.min.y, group.center().y, group.max.y),
+        ];
+        let theirs = [
+            lines(other.min.x, other.center().x, other.max.x),
+            lines(other.min.y, other.center().y, other.max.y),
+        ];
+        for axis in 0..2 {
+            for m in mine[axis] {
+                for t in theirs[axis] {
+                    let d = t - m;
+                    if d.abs() <= threshold
+                        && best[axis].is_none_or(|(bd, _, _)| d.abs() < bd.abs())
+                    {
+                        best[axis] = Some((d, t, *other));
+                    }
+                }
+            }
+        }
+    }
+    let off = vec2(best[0].map_or(0.0, |b| b.0), best[1].map_or(0.0, |b| b.0));
+    let moved = group.translate(off);
+    let mut guides = Vec::new();
+    if let Some((_, at, other)) = best[0] {
+        guides.push(Guide {
+            vertical: true,
+            at,
+            from: moved.min.y.min(other.min.y),
+            to: moved.max.y.max(other.max.y),
+        });
+    }
+    if let Some((_, at, other)) = best[1] {
+        guides.push(Guide {
+            vertical: false,
+            at,
+            from: moved.min.x.min(other.min.x),
+            to: moved.max.x.max(other.max.x),
+        });
+    }
+    (off, guides)
+}
+
+#[cfg(test)]
+mod guide_tests {
+    use super::*;
+    use egui::pos2;
+
+    #[test]
+    fn snaps_to_nearest_edge_within_threshold() {
+        let other = Rect::from_min_size(pos2(100.0, 0.0), vec2(50.0, 50.0));
+        // Left edge 3 units short of the other's left edge; top far away.
+        let group = Rect::from_min_size(pos2(97.0, 200.0), vec2(40.0, 30.0));
+        let (off, guides) = align_to(group, &[other], 6.0);
+        assert_eq!(off, vec2(3.0, 0.0));
+        assert_eq!(guides.len(), 1);
+        assert!(guides[0].vertical && guides[0].at == 100.0);
+        assert_eq!((guides[0].from, guides[0].to), (0.0, 230.0));
+    }
+
+    #[test]
+    fn aligns_centres_and_ignores_far_nodes() {
+        let other = Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 100.0));
+        let group = Rect::from_min_size(pos2(500.0, 44.0), vec2(20.0, 20.0)); // centre y = 54
+        let (off, guides) = align_to(group, &[other], 6.0);
+        assert_eq!(off.x, 0.0, "nothing aligns horizontally");
+        assert_eq!(
+            off.y, -4.0,
+            "centre 54 -> other's centre 50 (closer than any edge)"
+        );
+        assert!(guides.iter().all(|g| !g.vertical));
+        let (off, guides) = align_to(group, &[], 6.0);
+        assert_eq!(off, Vec2::ZERO);
+        assert!(guides.is_empty());
     }
 }

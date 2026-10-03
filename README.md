@@ -22,6 +22,10 @@ cargo run --example icons   # built-in icon gallery
 | Handles | `FlowViewer::handles` — any number per node, on any side, source or target |
 | Connecting | drag handle → handle, snapping, live validation (`can_connect`), `Esc` cancels |
 | Edge types | `Bezier`, `Straight`, `Step`, `SmoothStep`; labels, arrowheads, per-edge `color` / `width` |
+| Arrowheads | `edge.arrow = true` with `edge.arrow_style = ArrowStyle::{Triangle, Open, Circle, Diamond}`; `edge.arrow_at_source = true` for two-way links |
+| Edge labels | `edge.label` plus `edge.label_style = EdgeLabelStyle { position, size, color, background }`; `position` runs 0.0 (source) to 1.0 (target) |
+| Alignment guides | `FlowOptions::alignment_guides` snaps dragged nodes to other nodes' edges and centres and draws guide lines (`guide_threshold` px) |
+| Keyboard nudge | arrow keys move selected nodes 1 unit, Shift+arrow 10; `FlowOptions::keyboard_nudge` |
 | Line style and colour | `edge.line_style = LineStyle::{Solid, Dashed, Dotted, Custom { dash, gap }}`, `edge.color`, `edge.width`; `EdgeKind::Straight` for a direct line |
 | Animated edges | `edge.animated = true` marches dashes (`animation_speed`, negative reverses) |
 | Icons | built-in `Icon` set (check, close, plus, minus, chevrons, triangles, arrows) via `icon(ui, Icon::Check, 14.0)` / `icon_button(..)`; painter-drawn, so no font, SVG or asset is needed and they follow the text colour |
@@ -161,8 +165,13 @@ The icons are drawn with egui's painter, so they never render as empty boxes lik
 ```sh
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
+cargo test --all-features      # unit + render tests (they inspect the painted shapes)
+cargo test --lib               # without the optional serde feature
+cargo build --examples --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 ```
+
+CI runs all of these on Linux, and the library tests on Windows and macOS too.
 
 ## Animation
 

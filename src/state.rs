@@ -21,6 +21,7 @@ pub(crate) struct Interaction {
     pub box_select: Option<Pos2>,
     pub connecting: Option<ConnectDrag>,
     pub resize: Option<ResizeDrag>,
+    pub guides: Vec<crate::geometry::Guide>,
 }
 
 pub(crate) struct ResizeDrag {
@@ -261,6 +262,9 @@ impl<N, E> FlowState<N, E> {
             line_style: LineStyle::Solid,
             animated: false,
             arrow: false,
+            arrow_style: ArrowStyle::Triangle,
+            arrow_at_source: false,
+            label_style: EdgeLabelStyle::default(),
             color: None,
             width: None,
             animation_speed: 20.0,

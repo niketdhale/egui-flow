@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -19,4 +22,27 @@ jobs:
           sudo apt-get install -y libxkbcommon-dev libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
+      # Unit tests, including the render tests that inspect the painted shapes.
       - run: cargo test --all-features
+      # Also without the optional `serde` feature.
+      - run: cargo test --lib
+      # The examples must keep compiling.
+      - run: cargo build --examples --all-features
+      # Doc comments and intra-doc links must be valid.
+      - run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # The library tests need no window or GPU, so they run on every platform.
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --lib --all-features

@@ -111,6 +111,46 @@ impl Handle {
     }
 }
 
+/// Shape of an edge's arrowhead.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ArrowStyle {
+    /// A filled triangle.
+    #[default]
+    Triangle,
+    /// Two strokes forming a chevron.
+    Open,
+    /// A filled dot.
+    Circle,
+    /// A filled diamond.
+    Diamond,
+}
+
+/// Where and how an edge's label is drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct EdgeLabelStyle {
+    /// Position along the edge: `0.0` at the source, `1.0` at the target.
+    pub position: f32,
+    /// Font size in flow units.
+    pub size: f32,
+    /// `None` uses the theme's text colour.
+    pub color: Option<Color32>,
+    /// Fill behind the text; `None` uses the theme's window fill.
+    pub background: Option<Color32>,
+}
+
+impl Default for EdgeLabelStyle {
+    fn default() -> Self {
+        Self {
+            position: 0.5,
+            size: 12.0,
+            color: None,
+            background: None,
+        }
+    }
+}
+
 /// Stroke pattern of an edge.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -230,6 +270,12 @@ pub struct Edge<D> {
     pub animated: bool,
     /// Draw an arrowhead at the target.
     pub arrow: bool,
+    /// Shape of the arrowhead(s).
+    pub arrow_style: ArrowStyle,
+    /// Also draw an arrowhead at the source (for two-way links).
+    pub arrow_at_source: bool,
+    /// Where and how `label` is drawn.
+    pub label_style: EdgeLabelStyle,
     /// Stroke colour; `None` uses the theme's edge colour.
     pub color: Option<Color32>,
     /// Stroke width in flow units; `None` uses 1.5.

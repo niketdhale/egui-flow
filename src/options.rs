@@ -52,6 +52,13 @@ pub struct FlowOptions {
     pub edges_reconnectable: bool,
     /// Show resize grips on selected nodes (see [`Node::resizable`](crate::Node::resizable)).
     pub nodes_resizable: bool,
+    /// While dragging nodes, snap their edges and centres to other nodes' and
+    /// draw guide lines.
+    pub alignment_guides: bool,
+    /// Snap distance for `alignment_guides`, in screen pixels.
+    pub guide_threshold: f32,
+    /// Arrow keys nudge the selected nodes (1 unit, or 10 with Shift).
+    pub keyboard_nudge: bool,
     /// Emit undo/redo/copy/cut/paste/duplicate request events for Ctrl/Cmd+Z, Shift+Z / Y,
     /// C, X, V, D while the pointer is over the canvas. Feed them to an
     /// [`Editor`](crate::Editor).
@@ -84,6 +91,9 @@ impl Default for FlowOptions {
             connection_radius: 20.0,
             edges_reconnectable: true,
             nodes_resizable: true,
+            alignment_guides: false,
+            guide_threshold: 6.0,
+            keyboard_nudge: true,
             keyboard_shortcuts: true,
             highlight_connected: false,
         }

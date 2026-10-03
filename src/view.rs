@@ -11,7 +11,9 @@ use egui::{
 };
 
 use crate::events::{FlowEvent, FlowResponse};
-use crate::geometry::{dist_to_path, edge_path, end_direction, path_midpoint, point_at};
+use crate::geometry::{
+    align_to, dist_to_path, edge_path, end_direction, point_at, start_direction,
+};
 use crate::options::{Background, FlowOptions};
 use crate::state::{ConnectDrag, FlowState, NodeDrag, PulseDirection, PulseShape, ResizeDrag};
 use crate::types::*;
@@ -295,16 +297,48 @@ impl Flow {
                 && let Some(d) = &mut state.interaction.node_drag
             {
                 d.accum += r.drag_delta();
-                for (oid, origin) in &d.origins {
-                    if let Some(n) = state.nodes.iter_mut().find(|n| n.id == *oid) {
-                        n.position = snap(*origin + d.accum, o.snap_to_grid);
-                        dragged.push(*oid);
+                let proposed: Vec<(NodeId, Pos2)> = d
+                    .origins
+                    .iter()
+                    .map(|(oid, origin)| (*oid, snap(*origin + d.accum, o.snap_to_grid)))
+                    .collect();
+                let mut offset = Vec2::ZERO;
+                let mut guides = Vec::new();
+                if o.alignment_guides {
+                    let moving: HashSet<NodeId> = proposed.iter().map(|(i, _)| *i).collect();
+                    let group = proposed
+                        .iter()
+                        .filter_map(|(i, p)| {
+                            state
+                                .nodes
+                                .iter()
+                                .find(|n| n.id == *i)
+                                .map(|n| Rect::from_min_size(*p, n.size))
+                        })
+                        .reduce(|a, b| a.union(b));
+                    let others: Vec<Rect> = state
+                        .nodes
+                        .iter()
+                        .filter(|n| !moving.contains(&n.id))
+                        .map(|n| n.rect())
+                        .collect();
+                    if let Some(group) = group {
+                        let threshold = o.guide_threshold / state.viewport.zoom.max(1e-3);
+                        (offset, guides) = align_to(group, &others, threshold);
+                    }
+                }
+                state.interaction.guides = guides;
+                for (oid, pos) in proposed {
+                    if let Some(n) = state.nodes.iter_mut().find(|n| n.id == oid) {
+                        n.position = pos + offset;
+                        dragged.push(oid);
                     }
                 }
             }
             if r.drag_stopped()
                 && let Some(d) = state.interaction.node_drag.take()
             {
+                state.interaction.guides.clear();
                 stopped.extend(d.origins.iter().map(|(id, _)| *id));
             }
         }
@@ -490,29 +524,29 @@ impl Flow {
                 cp.add(Shape::line(path.clone(), stroke));
             }
             if e.arrow {
-                let tip = *path.last().unwrap();
-                let dir = end_direction(path);
-                let normal = vec2(-dir.y, dir.x);
-                let base = tip - dir * 10.0;
-                cp.add(Shape::convex_polygon(
-                    vec![tip, base + normal * 5.0, base - normal * 5.0],
+                draw_arrow(
+                    &cp,
+                    *path.last().unwrap(),
+                    end_direction(path),
                     color,
-                    Stroke::NONE,
-                ));
+                    e.arrow_style,
+                );
+            }
+            if e.arrow_at_source {
+                draw_arrow(&cp, path[0], -start_direction(path), color, e.arrow_style);
             }
             if let Some(label) = e.label.as_ref().filter(|_| !edge_dim[*i]) {
-                let galley = cp.layout_no_wrap(
-                    label.clone(),
-                    FontId::proportional(12.0),
-                    visuals.text_color(),
-                );
-                let mid = path_midpoint(path);
+                let ls = e.label_style;
+                let text_color = ls.color.unwrap_or(visuals.text_color());
+                let galley =
+                    cp.layout_no_wrap(label.clone(), FontId::proportional(ls.size), text_color);
+                let at = point_at(path, ls.position);
                 cp.rect_filled(
-                    Rect::from_center_size(mid, galley.size() + vec2(8.0, 4.0)),
+                    Rect::from_center_size(at, galley.size() + vec2(8.0, 4.0)),
                     3.0,
-                    visuals.window_fill,
+                    ls.background.unwrap_or(visuals.window_fill),
                 );
-                cp.galley(mid - galley.size() / 2.0, galley, visuals.text_color());
+                cp.galley(at - galley.size() / 2.0, galley, text_color);
             }
         }
 
@@ -939,6 +973,22 @@ impl Flow {
             }
         }
 
+        // --- alignment guides while dragging --------------------------------
+        for g in &state.interaction.guides {
+            let (a, b) = if g.vertical {
+                (pos2(g.at, g.from), pos2(g.at, g.to))
+            } else {
+                (pos2(g.from, g.at), pos2(g.to, g.at))
+            };
+            cp.line_segment(
+                [a, b],
+                Stroke::new(
+                    1.0 / state.viewport.zoom.max(1e-3),
+                    Color32::from_rgb(255, 90, 160),
+                ),
+            );
+        }
+
         // --- box selection --------------------------------------------------
         if let (Some(start), Some(cur)) = (state.interaction.box_select, pointer_scene(&tf)) {
             let r = Rect::from_two_pos(start, cur);
@@ -962,6 +1012,40 @@ impl Flow {
             let (nodes, edges) = state.delete_selected();
             if !nodes.is_empty() || !edges.is_empty() {
                 events.push(FlowEvent::Deleted { nodes, edges });
+            }
+        }
+
+        if o.keyboard_nudge
+            && hover.is_some()
+            && !ui.ctx().wants_keyboard_input()
+            && state.nodes.iter().any(|n| n.selected && n.draggable)
+            && o.nodes_draggable
+        {
+            use egui::Modifiers as M;
+            let delta = ui.input_mut(|i| {
+                let mut d = Vec2::ZERO;
+                for (key, dir) in [
+                    (Key::ArrowLeft, vec2(-1.0, 0.0)),
+                    (Key::ArrowRight, vec2(1.0, 0.0)),
+                    (Key::ArrowUp, vec2(0.0, -1.0)),
+                    (Key::ArrowDown, vec2(0.0, 1.0)),
+                ] {
+                    if i.consume_key(M::SHIFT, key) {
+                        d += dir * 10.0;
+                    } else if i.consume_key(M::NONE, key) {
+                        d += dir;
+                    }
+                }
+                d
+            });
+            if delta != Vec2::ZERO {
+                let mut ids = Vec::new();
+                for n in state.nodes.iter_mut().filter(|n| n.selected && n.draggable) {
+                    n.position += delta;
+                    ids.push(n.id);
+                }
+                events.push(FlowEvent::NodesDragged(ids.clone()));
+                events.push(FlowEvent::NodesDragStopped(ids));
             }
         }
 
@@ -1019,6 +1103,41 @@ impl Flow {
             pane,
             nodes: node_resps,
             events,
+        }
+    }
+}
+
+fn draw_arrow(cp: &Painter, tip: Pos2, dir: Vec2, color: Color32, style: ArrowStyle) {
+    let normal = vec2(-dir.y, dir.x);
+    match style {
+        ArrowStyle::Triangle => {
+            let base = tip - dir * 10.0;
+            cp.add(Shape::convex_polygon(
+                vec![tip, base + normal * 5.0, base - normal * 5.0],
+                color,
+                Stroke::NONE,
+            ));
+        }
+        ArrowStyle::Open => {
+            let base = tip - dir * 9.0;
+            let stroke = Stroke::new(1.8_f32, color);
+            cp.line_segment([base + normal * 5.0, tip], stroke);
+            cp.line_segment([base - normal * 5.0, tip], stroke);
+        }
+        ArrowStyle::Circle => {
+            cp.circle_filled(tip - dir * 4.0, 4.0, color);
+        }
+        ArrowStyle::Diamond => {
+            cp.add(Shape::convex_polygon(
+                vec![
+                    tip,
+                    tip - dir * 7.0 + normal * 4.5,
+                    tip - dir * 14.0,
+                    tip - dir * 7.0 - normal * 4.5,
+                ],
+                color,
+                Stroke::NONE,
+            ));
         }
     }
 }
@@ -1272,7 +1391,7 @@ fn minimap<N, E, V: FlowViewer<N, E>>(
 mod tests {
     use super::*;
     use crate::PulseStyle;
-    use egui::{Context, Event, RawInput};
+    use egui::{Context, Event, RawInput, Shape};
 
     struct V;
     impl FlowViewer<&'static str, ()> for V {
@@ -1298,6 +1417,33 @@ mod tests {
         time: Option<f64>,
         animate: bool,
     ) -> Vec<FlowEvent<&'static str, ()>> {
+        let opts = FlowOptions {
+            minimap: true,
+            fit_view_on_init: fit,
+            animate,
+            ..Default::default()
+        };
+        run_frame_with(ctx, state, events, time, opts)
+    }
+
+    fn run_frame_with(
+        ctx: &Context,
+        state: &mut FlowState<&'static str, ()>,
+        events: Vec<Event>,
+        time: Option<f64>,
+        opts: FlowOptions,
+    ) -> Vec<FlowEvent<&'static str, ()>> {
+        run_full(ctx, state, events, time, opts).0
+    }
+
+    /// Run one frame, returning the events and every shape that was painted.
+    fn run_full(
+        ctx: &Context,
+        state: &mut FlowState<&'static str, ()>,
+        events: Vec<Event>,
+        time: Option<f64>,
+        opts: FlowOptions,
+    ) -> (Vec<FlowEvent<&'static str, ()>>, Vec<Shape>) {
         let mut out = Vec::new();
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
@@ -1305,20 +1451,302 @@ mod tests {
             time,
             ..Default::default()
         };
-        let _ = ctx.run(input, |ctx| {
+        let full = ctx.run(input, |ctx| {
             egui::CentralPanel::default()
                 .frame(Frame::NONE)
                 .show(ctx, |ui| {
-                    let opts = FlowOptions {
-                        minimap: true,
-                        fit_view_on_init: fit,
-                        animate,
-                        ..Default::default()
-                    };
+                    let opts = opts.clone();
                     out = Flow::new("t").options(opts).show(ui, state, &mut V).events;
                 });
         });
-        out
+        let mut shapes = Vec::new();
+        for clipped in full.shapes {
+            flatten(clipped.shape, &mut shapes);
+        }
+        (out, shapes)
+    }
+
+    fn flatten(shape: Shape, out: &mut Vec<Shape>) {
+        match shape {
+            Shape::Vec(v) => v.into_iter().for_each(|s| flatten(s, out)),
+            other => out.push(other),
+        }
+    }
+
+    /// Two nodes joined by a straight edge, settled over a few frames.
+    fn straight_pair(
+        edit: impl FnOnce(&mut Edge<()>),
+    ) -> (
+        Context,
+        FlowState<&'static str, ()>,
+        Vec<Shape>,
+        (Pos2, Pos2),
+    ) {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(50.0, 100.0), "a");
+        let b = s.add_node(pos2(400.0, 100.0), "b");
+        let e = s.connect(a, b, ()).unwrap();
+        {
+            let edge = s.edge_mut(e).unwrap();
+            edge.kind = Some(EdgeKind::Straight);
+            edit(edge);
+        }
+        let opts = FlowOptions {
+            minimap: false,
+            controls: false,
+            ..Default::default()
+        };
+        let mut shapes = Vec::new();
+        for _ in 0..4 {
+            shapes = run_full(&ctx, &mut s, vec![], None, opts.clone()).1;
+        }
+        let from =
+            Handle::source(Handle::DEFAULT_SOURCE, Side::Right).position(s.node(a).unwrap().rect());
+        let to =
+            Handle::target(Handle::DEFAULT_TARGET, Side::Left).position(s.node(b).unwrap().rect());
+        (ctx, s, shapes, (from, to))
+    }
+
+    #[test]
+    fn every_arrow_style_draws_at_the_target_and_optionally_the_source() {
+        let none = straight_pair(|_| {}).2.len();
+        // (style, shapes one arrowhead adds)
+        for (style, adds) in [
+            (ArrowStyle::Triangle, 1),
+            (ArrowStyle::Open, 2),
+            (ArrowStyle::Circle, 1),
+            (ArrowStyle::Diamond, 1),
+        ] {
+            let target = straight_pair(|e| {
+                e.arrow = true;
+                e.arrow_style = style;
+            })
+            .2
+            .len();
+            let both = straight_pair(|e| {
+                e.arrow = true;
+                e.arrow_at_source = true;
+                e.arrow_style = style;
+            })
+            .2
+            .len();
+            let source_only = straight_pair(|e| {
+                e.arrow_at_source = true;
+                e.arrow_style = style;
+            })
+            .2
+            .len();
+            assert_eq!(target - none, adds, "{style:?} at target");
+            assert_eq!(both - none, 2 * adds, "{style:?} at both ends");
+            assert_eq!(source_only - none, adds, "{style:?} at source only");
+        }
+    }
+
+    #[test]
+    fn arrowheads_sit_on_the_handles_they_point_at() {
+        let (_, _, shapes, (from, to)) = straight_pair(|e| {
+            e.arrow = true;
+            e.arrow_at_source = true;
+        });
+        let tips: Vec<Pos2> = shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Path(p) if p.closed => Some(p.points.clone()),
+                _ => None,
+            })
+            .filter(|pts| pts.len() == 3)
+            .map(|pts| pts[0])
+            .collect();
+        assert!(
+            tips.iter().any(|t| (*t - to).length() < 0.5),
+            "target tip: {tips:?} vs {to:?}"
+        );
+        assert!(
+            tips.iter().any(|t| (*t - from).length() < 0.5),
+            "source tip: {tips:?} vs {from:?}"
+        );
+    }
+
+    fn text_shape<'a>(shapes: &'a [Shape], text: &str) -> Option<&'a egui::epaint::TextShape> {
+        shapes.iter().find_map(|s| match s {
+            Shape::Text(t) if t.galley.text() == text => Some(t),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn edge_label_follows_its_style() {
+        let fill = Color32::from_rgb(10, 20, 30);
+        let ink = Color32::from_rgb(200, 150, 50);
+        let (_, _, shapes, (from, to)) = straight_pair(|e| {
+            e.label = Some("RPM".into());
+            e.label_style = EdgeLabelStyle {
+                position: 0.7,
+                size: 11.0,
+                color: Some(ink),
+                background: Some(fill),
+            };
+        });
+        let want = from + (to - from) * 0.7;
+        let t = text_shape(&shapes, "RPM").expect("label drawn");
+        let centre = t.pos + t.galley.size() / 2.0;
+        assert!((centre - want).length() < 1.5, "{centre:?} vs {want:?}");
+        let section = &t.galley.job.sections[0].format;
+        assert_eq!((section.color, section.font_id.size), (ink, 11.0));
+        let bg = shapes.iter().find_map(|s| match s {
+            Shape::Rect(r) if r.fill == fill => Some(r.rect),
+            _ => None,
+        });
+        let bg = bg.expect("label background drawn");
+        assert!((bg.center() - want).length() < 1.5, "{bg:?}");
+        assert!(bg.contains_rect(Rect::from_center_size(centre, t.galley.size())));
+    }
+
+    #[test]
+    fn edge_label_defaults_to_the_middle_in_the_theme_colours() {
+        let (ctx, _, shapes, (from, to)) = straight_pair(|e| e.label = Some("mid".into()));
+        let t = text_shape(&shapes, "mid").expect("label drawn");
+        let centre = t.pos + t.galley.size() / 2.0;
+        assert!((centre - from.lerp(to, 0.5)).length() < 1.5);
+        let section = &t.galley.job.sections[0].format;
+        assert_eq!(section.color, ctx.style().visuals.text_color());
+        assert_eq!(section.font_id.size, 12.0);
+    }
+
+    #[test]
+    fn alignment_guides_are_painted_while_dragging_and_not_after() {
+        let guide = Color32::from_rgb(255, 90, 160);
+        let painted = |shapes: &[Shape]| {
+            shapes
+                .iter()
+                .any(|s| matches!(s, Shape::LineSegment { stroke, .. } if stroke.color == guide))
+        };
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(50.0, 100.0), "a");
+        let b = s.add_node(pos2(400.0, 250.0), "b");
+        let opts = FlowOptions {
+            alignment_guides: true,
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            run_frame_with(&ctx, &mut s, vec![], None, opts.clone());
+        }
+        let top = s.node(a).unwrap().position.y;
+        let grab = s.node(b).unwrap().rect().center();
+        let btn = |pos, pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        run_frame_with(
+            &ctx,
+            &mut s,
+            vec![Event::PointerMoved(grab)],
+            None,
+            opts.clone(),
+        );
+        run_frame_with(&ctx, &mut s, vec![btn(grab, true)], None, opts.clone());
+        let far = grab + vec2(-20.0, -140.0); // not within range of anything
+        let near = grab + vec2(-20.0, top + 4.0 - 250.0);
+        let mut last = Vec::new();
+        for i in 1..=4 {
+            let p = grab + (far - grab) * (i as f32 / 4.0);
+            last = run_full(
+                &ctx,
+                &mut s,
+                vec![Event::PointerMoved(p)],
+                None,
+                opts.clone(),
+            )
+            .1;
+        }
+        assert!(!painted(&last), "no guide while nothing is in range");
+        for i in 1..=4 {
+            let p = far + (near - far) * (i as f32 / 4.0);
+            last = run_full(
+                &ctx,
+                &mut s,
+                vec![Event::PointerMoved(p)],
+                None,
+                opts.clone(),
+            )
+            .1;
+        }
+        assert!(painted(&last), "guide painted when snapped");
+        run_frame_with(&ctx, &mut s, vec![btn(near, false)], None, opts.clone());
+        let (_, after) = run_full(&ctx, &mut s, vec![], None, opts.clone());
+        assert!(!painted(&after), "guide gone after release");
+
+        // With the option off nothing snaps or paints, even at the same spot.
+        let off = FlowOptions::default();
+        let mut s2 = FlowState::new();
+        s2.add_node(pos2(50.0, 100.0), "a");
+        let b2 = s2.add_node(pos2(400.0, 250.0), "b");
+        for _ in 0..3 {
+            run_frame_with(&ctx, &mut s2, vec![], None, off.clone());
+        }
+        run_frame_with(
+            &ctx,
+            &mut s2,
+            vec![Event::PointerMoved(grab)],
+            None,
+            off.clone(),
+        );
+        run_frame_with(&ctx, &mut s2, vec![btn(grab, true)], None, off.clone());
+        for i in 1..=6 {
+            let p = grab + (near - grab) * (i as f32 / 6.0);
+            last = run_full(
+                &ctx,
+                &mut s2,
+                vec![Event::PointerMoved(p)],
+                None,
+                off.clone(),
+            )
+            .1;
+        }
+        assert!(!painted(&last));
+        assert!((s2.node(b2).unwrap().position.y - (top + 4.0)).abs() < 1.5);
+    }
+
+    #[test]
+    fn pulse_shapes_paint_a_head_in_the_pulse_colour() {
+        let ink = Color32::from_rgb(250, 120, 10);
+        for (shape, closed_path) in [
+            (crate::PulseShape::Circle, false),
+            (crate::PulseShape::Square, false),
+            (crate::PulseShape::Diamond, true),
+            (crate::PulseShape::Arrow, true),
+        ] {
+            let ctx = Context::default();
+            let mut s = FlowState::new();
+            let a = s.add_node(pos2(0.0, 0.0), "a");
+            let b = s.add_node(pos2(300.0, 100.0), "b");
+            let e = s.connect(a, b, ()).unwrap();
+            let opts = FlowOptions::default();
+            run_full(&ctx, &mut s, vec![], Some(0.0), opts.clone());
+            s.pulse_edge(
+                e,
+                PulseStyle {
+                    duration: 1.0,
+                    color: Some(ink),
+                    shape,
+                    trail: 0,
+                    ..Default::default()
+                },
+            );
+            run_full(&ctx, &mut s, vec![], Some(1.0), opts.clone());
+            let (_, shapes) = run_full(&ctx, &mut s, vec![], Some(1.5), opts);
+            let painted = shapes.iter().any(|sh| match sh {
+                Shape::Path(p) => closed_path && p.closed && p.fill == ink,
+                Shape::Circle(c) => shape == crate::PulseShape::Circle && c.fill == ink,
+                Shape::Rect(r) => shape == crate::PulseShape::Square && r.fill == ink,
+                _ => false,
+            });
+            assert!(painted, "{shape:?} head painted");
+        }
     }
 
     #[test]
@@ -1581,6 +2009,104 @@ mod tests {
             assert!(hit.is_some(), "shortcut {want}: {out:?}");
             assert_eq!(out.len(), 1, "exactly one request: {out:?}");
         }
+    }
+
+    #[test]
+    fn arrow_keys_nudge_selected_nodes() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(100.0, 100.0), "a");
+        let b = s.add_node(pos2(300.0, 100.0), "b");
+        s.node_mut(a).unwrap().selected = true;
+        for _ in 0..2 {
+            run_frame(
+                &ctx,
+                &mut s,
+                vec![Event::PointerMoved(pos2(600.0, 400.0))],
+                false,
+            );
+        }
+        let key = |key, modifiers| Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        let out = run_frame(
+            &ctx,
+            &mut s,
+            vec![key(egui::Key::ArrowRight, egui::Modifiers::NONE)],
+            false,
+        );
+        assert_eq!(s.node(a).unwrap().position, pos2(101.0, 100.0));
+        assert!(
+            out.iter()
+                .any(|e| matches!(e, FlowEvent::NodesDragStopped(ids) if ids == &[a]))
+        );
+        run_frame(
+            &ctx,
+            &mut s,
+            vec![key(egui::Key::ArrowDown, egui::Modifiers::SHIFT)],
+            false,
+        );
+        assert_eq!(s.node(a).unwrap().position, pos2(101.0, 110.0));
+        assert_eq!(
+            s.node(b).unwrap().position,
+            pos2(300.0, 100.0),
+            "unselected stays"
+        );
+    }
+
+    #[test]
+    fn dragging_near_another_node_snaps_to_its_edge() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(50.0, 100.0), "a");
+        let b = s.add_node(pos2(400.0, 250.0), "b");
+        let opts = FlowOptions {
+            alignment_guides: true,
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            run_frame_with(&ctx, &mut s, vec![], None, opts.clone());
+        }
+        let top = s.node(a).unwrap().position.y;
+        let grab = s.node(b).unwrap().rect().center();
+        let btn = |pos, pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        run_frame_with(
+            &ctx,
+            &mut s,
+            vec![Event::PointerMoved(grab)],
+            None,
+            opts.clone(),
+        );
+        run_frame_with(&ctx, &mut s, vec![btn(grab, true)], None, opts.clone());
+        // Move so b's top lands 4 units below a's top: inside the 6px threshold.
+        let to = grab + vec2(-20.0, top + 4.0 - 250.0);
+        for i in 1..=6 {
+            let p = grab + (to - grab) * (i as f32 / 6.0);
+            run_frame_with(
+                &ctx,
+                &mut s,
+                vec![Event::PointerMoved(p)],
+                None,
+                opts.clone(),
+            );
+        }
+        assert_eq!(
+            s.node(b).unwrap().position.y,
+            top,
+            "snapped onto a's top edge"
+        );
+        assert!(!s.interaction.guides.is_empty(), "guide line is shown");
+        run_frame_with(&ctx, &mut s, vec![btn(to, false)], None, opts);
+        assert!(s.interaction.guides.is_empty(), "guides clear on release");
     }
 
     #[test]
