@@ -48,6 +48,10 @@ pub struct FlowOptions {
     pub view_transition: f32,
     /// How close (flow units) a dragged connection must get to a handle to snap to it.
     pub connection_radius: f32,
+    /// Drag the ends of a selected edge to another handle.
+    pub edges_reconnectable: bool,
+    /// While a node is selected or hovered, dim everything not connected to it.
+    pub highlight_connected: bool,
 }
 
 impl Default for FlowOptions {
@@ -72,6 +76,8 @@ impl Default for FlowOptions {
             animate: true,
             view_transition: 0.35,
             connection_radius: 20.0,
+            edges_reconnectable: true,
+            highlight_connected: false,
         }
     }
 }

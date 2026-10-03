@@ -2,6 +2,7 @@
 
 use egui::{Pos2, Response};
 
+use crate::state::PulseDirection;
 use crate::types::*;
 
 /// An interaction the application may want to react to.
@@ -18,6 +19,19 @@ pub enum FlowEvent<N, E> {
     Connected(EdgeId),
     /// A connection drag was released without creating an edge. `pos` is the
     /// release point in flow coordinates; useful for "drop to add node".
+    /// An existing edge's end was dragged onto another handle. The edge already
+    /// carries `new`; mirror it into your own model.
+    Reconnected {
+        edge: EdgeId,
+        old: Connection,
+        new: Connection,
+    },
+    /// A pulse finished its leg along `edge`. `tag` is [`PulseStyle::tag`](crate::PulseStyle::tag).
+    PulseArrived {
+        edge: EdgeId,
+        tag: u64,
+        direction: PulseDirection,
+    },
     ConnectionDropped {
         node: NodeId,
         handle: HandleId,

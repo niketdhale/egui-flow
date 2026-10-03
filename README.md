@@ -9,6 +9,7 @@ A [React Flow](https://reactflow.dev/)-style node-graph canvas for [egui](https:
 
 ```sh
 cargo run --example basic   # node graph canvas
+cargo run --example gateway # CAN-gateway demo: reconnect, route pulses, highlight
 cargo run --example icons   # built-in icon gallery
 ```
 
@@ -25,7 +26,10 @@ cargo run --example icons   # built-in icon gallery
 | Animated edges | `edge.animated = true` marches dashes (`animation_speed`, negative reverses) |
 | Icons | built-in `Icon` set (check, close, plus, minus, chevrons, triangles, arrows) via `icon(ui, Icon::Check, 14.0)` / `icon_button(..)`; painter-drawn, so no font, SVG or asset is needed and they follow the text colour |
 | Particles along edges | `state.pulse_edge(id, PulseStyle::default())` sends a dot source → target |
-| Pulse direction, delay, label | `PulseStyle { direction: PulseDirection::Reverse, delay, label, .. }` or `pulse_edge_reverse`; delays let you sequence the legs of a route; the label shows on hover |
+| Reconnect edges | select an edge, drag the ring on either end to another handle; the edge snaps back if dropped on nothing; `FlowEvent::Reconnected { edge, old, new }`; `FlowOptions::edges_reconnectable` |
+| Highlight connected | `FlowOptions::highlight_connected` / `Flow::highlight_connected(true)` dims everything not connected to the selected or hovered node |
+| Route pulses | `state.pulse_route(start_node, &[edge, edge, ..], style)` animates a multi-hop route leg by leg, picking forward/reverse per edge |
+| Pulse direction, delay, label | `PulseStyle { direction: PulseDirection::Reverse, delay, label, .. }` or `pulse_edge_reverse`; delays let you sequence the legs of a route; the label shows on hover; `shape` (`Circle`/`Square`/`Diamond`/`Arrow`), `easing`, `trail` and `tag`; `FlowEvent::PulseArrived { edge, tag, direction }` fires when a leg ends |
 | Pulse limits | `state.max_pulses_per_edge` (default 8) and `state.pulse_overflow` (`Drop` or `ReplaceOldest`) |
 | `fitView({ duration })`, zoom easing | `state.fit_view_animated(secs)`, `state.animate_viewport(vp, secs)`; zoom/fit buttons ease; user input cancels |
 | Node enter transition | nodes added after the first frame fade in |
@@ -66,16 +70,38 @@ Node sizes are measured from the rendered content each frame. Enable the `serde`
 ## Pulses
 
 ```rust
-use egui_flow::{PulseDirection, PulseOverflow, PulseStyle};
+use egui_flow::{PulseDirection, PulseOverflow, PulseShape, PulseStyle};
 
-// A frame travelling Engine → CAN1, then CAN1 → Gateway half a second later.
-state.pulse_edge(engine_to_can1, PulseStyle { label: Some("0x1A0".into()), ..Default::default() });
+// A whole route in one call: each leg starts when the previous one arrives, and
+// forward/reverse is worked out per edge from the starting node.
+state.pulse_route(engine, &[engine_to_can1, can1_to_gateway, gateway_to_can2], PulseStyle {
+    shape: PulseShape::Arrow,
+    label: Some("0x1A0".into()),
+    tag: 7, // comes back in FlowEvent::PulseArrived
+    ..Default::default()
+});
+// Or one leg at a time, with your own delay.
 state.pulse_edge(can1_to_gateway, PulseStyle { delay: 0.5, ..Default::default() });
 // Bus → receiver, against the edge's own direction.
 state.pulse_edge_reverse(bus_to_ecu, PulseStyle::default());
 
 state.max_pulses_per_edge = 16;
 state.pulse_overflow = PulseOverflow::ReplaceOldest; // newest pulse wins under heavy traffic
+```
+
+## Reconnecting and highlighting
+
+```rust
+let opts = FlowOptions { highlight_connected: true, ..Default::default() };
+let out = Flow::new("graph").options(opts).show(ui, &mut state, &mut viewer);
+for event in out.events {
+    match event {
+        // The edge already carries `new`; mirror it into your own model.
+        FlowEvent::Reconnected { edge, old, new } => { /* ... */ }
+        FlowEvent::PulseArrived { edge, tag, .. } => { /* a frame reached the end of a leg */ }
+        _ => {}
+    }
+}
 ```
 
 ## Multiple connection points
