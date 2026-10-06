@@ -20,7 +20,7 @@ cargo run --example icons   # built-in icon gallery
 
 One continuous take through the whole library, recorded from the real app ([`examples/gateway`](examples/gateway.rs)):
 
-![An 80-second tour of egui-flow: pan and zoom, drag with alignment guides, connect, reconnect, edge and line styles, route pulses, resize, nudge, highlight, box select, copy and paste, undo and redo, delete, groups (move, collapse, drag in and out, wrap, ungroup) and crisp text at high zoom](docs/media/tour.gif)
+![A 104-second tour of egui-flow: pan and zoom, drag with alignment guides, connect, reconnect, edge and line styles, route pulses, resize, nudge, highlight, box select, copy and paste, undo and redo, delete, groups (move, collapse, drag in and out, constrained members, wrap, ungroup), auto layout, themes and crisp text at high zoom](docs/media/tour.gif)
 
 In order, with where to look:
 
@@ -41,7 +41,10 @@ In order, with where to look:
 | Groups | `Node::{is_group, parent}`, `FlowState::add_group`; drag the header and the members follow |
 | Collapse | the header toggle (`FlowEvent::GroupToggled`); edges to hidden members attach to the group |
 | Drag in and out | drop a node on a group to put it in, outside to take it out (`FlowEvent::ParentChanged`, `FlowOptions::group_drop`) |
+| Constrained member | `Node::constrained()`: a member cannot be dragged out of its group |
 | Group selected, ungroup | `FlowState::group_selected(..)`, `FlowState::ungroup(..)` |
+| Auto layout | `FlowState::auto_layout_animated(..)`: a scrambled graph glides into layered order, horizontal or vertical |
+| Themes | `FlowTheme::{dark, light, blueprint}` or your own colours |
 | Crisp text | `FlowOptions::crisp_text`: text is laid out again at the zoomed size, see below |
 
 ### Crisp text when zoomed
