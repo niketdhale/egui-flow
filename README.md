@@ -59,6 +59,7 @@ Painter-drawn, so they need no font and never render as empty boxes.
 | React Flow | egui-flow |
 |---|---|
 | Crisp text when zoomed | `FlowOptions::crisp_text` (on by default) re-lays out text at the zoomed size instead of stretching the 1x raster; the `gateway` example has a "Crisp text" checkbox to compare |
+| Themes | `FlowOptions::theme = FlowTheme::{dark(), light(), blueprint()}` or your own `FlowTheme { background, grid, edge, selection, handle, guide, node_fill, text, .. }`; every field is optional, the default keeps egui's colours |
 | Groups / sub-flows | `Node::{is_group, parent, collapsed}`; positions inside a group are relative to it; nesting, collapse, drag in and out, `group_selected`, `ungroup`, `fit_group` (see Groups below) |
 | Pan / zoom viewport | drag background or middle mouse to pan, wheel / pinch to zoom (zoom-to-cursor), `fit_view()` |
 | Custom nodes | implement `FlowViewer::node_ui` with any egui widgets |
@@ -213,6 +214,7 @@ What the canvas does for you:
 * Dropping a node on a group puts it in that group; dropping it outside its group takes it out (`FlowOptions::group_drop`). Both report `FlowEvent::ParentChanged`.
 * Dragging, nudging, copying and deleting a group take its members along. To delete a group but keep its members, `ungroup` it first.
 * A box select picks an open group only when the box covers all of it, so a box drawn inside one selects its members.
+* `node.constrain_to_parent = true` (or `Node::constrained()`) keeps a member inside its group, below the header, while it is dragged or nudged.
 
 Inside `Flow::show` (including your `FlowViewer` callbacks) node positions are in flow space; outside it, use `FlowState::abs_position` / `abs_rect` for flow-space positions of nodes in groups. `FlowState::bounds` already accounts for groups and ignores hidden members.
 
@@ -275,4 +277,4 @@ Everything above that moves can be disabled at once with `FlowOptions { animate:
 * Selectable labels are disabled inside nodes so dragging on text moves the node; re-enable in `node_ui` if needed.
 * Resizing sets a size; it does not make node content scale.
 * No node exit animation (removed nodes vanish immediately) or per-edge dash patterns.
-* Not yet implemented: auto-layout, and constraining a member to stay inside its group while dragging.
+* Not yet implemented: auto-layout.

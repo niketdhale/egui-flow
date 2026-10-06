@@ -7,6 +7,12 @@ All notable changes to egui-flow are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`FlowTheme`** (`FlowOptions::theme`, `Flow::theme`): colours for the canvas, edges, selection, handles,
+  alignment guides, labels, minimap and the default node frame and text, all optional so
+  `FlowTheme::default()` keeps the colours derived from egui's visuals. Presets `FlowTheme::{dark, light,
+  blueprint}`.
+- **`Node::constrain_to_parent`** (and `Node::constrained()`): a member stops at its group's edges, and
+  below its header, while it is dragged or nudged, instead of leaving.
 - **Groups** (sub-flows): `Node::{parent, is_group, collapsed}` and `Node::{group, in_group}`. A node's
   `position` is relative to its group; groups nest. `FlowState::{add_group, set_parent, children,
   descendants, ancestors, depth, abs_position, abs_rect, set_collapsed, fit_group, group_selected,

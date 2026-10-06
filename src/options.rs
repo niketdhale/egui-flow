@@ -1,5 +1,6 @@
 //! Canvas configuration.
 
+use crate::theme::FlowTheme;
 use crate::types::EdgeKind;
 
 /// Pattern drawn behind the graph.
@@ -52,6 +53,8 @@ pub struct FlowOptions {
     /// (and clean when zoomed out). Off, text is the 1x raster stretched by the
     /// zoom, which is cheaper but soft above 1x.
     pub crisp_text: bool,
+    /// Canvas colours; the default keeps the ones derived from egui's visuals.
+    pub theme: FlowTheme,
     /// Dropping a node on a group puts it in that group; dropping it outside its
     /// group takes it out. Off, membership only changes through the API.
     pub group_drop: bool,
@@ -109,6 +112,7 @@ impl Default for FlowOptions {
             nodes_connectable: true,
             handle_visibility: HandleVisibility::Always,
             crisp_text: true,
+            theme: FlowTheme::default(),
             group_drop: true,
             group_header_height: 30.0,
             elements_selectable: true,

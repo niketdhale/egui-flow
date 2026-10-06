@@ -39,6 +39,7 @@ mod groups;
 mod icons;
 mod options;
 mod state;
+mod theme;
 mod types;
 mod view;
 mod viewer;
@@ -51,6 +52,7 @@ pub use options::{Background, FlowOptions, HandleVisibility};
 pub use state::{
     Clipboard, FlowState, PulseDirection, PulseEasing, PulseOverflow, PulseShape, PulseStyle,
 };
+pub use theme::FlowTheme;
 pub use types::*;
 pub use view::Flow;
 pub use viewer::FlowViewer;

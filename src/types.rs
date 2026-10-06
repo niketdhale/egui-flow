@@ -224,6 +224,10 @@ pub struct Node<D> {
     /// A container for other nodes (see [`FlowState::set_parent`](crate::FlowState::set_parent)).
     /// Groups draw behind their members and can be collapsed.
     pub is_group: bool,
+    /// Keep this node inside its group while it is dragged or nudged: it stops at the
+    /// group's edges (and below its header) instead of leaving. Has no effect on a node
+    /// without a group. Moving the group itself, the API, and undo are not constrained.
+    pub constrain_to_parent: bool,
     /// For groups: hide the members and show just the group's header. Edges to hidden
     /// members attach to the group instead.
     pub collapsed: bool,
@@ -245,6 +249,7 @@ impl<D> Node<D> {
             max_size: None,
             resizable: true,
             parent: None,
+            constrain_to_parent: false,
             is_group: false,
             collapsed: false,
             data,
@@ -259,6 +264,12 @@ impl<D> Node<D> {
     pub fn group(mut self, size: Vec2) -> Self {
         self.is_group = true;
         self.fixed_size = Some(size);
+        self
+    }
+
+    /// Keep this node inside its group when dragged (see [`constrain_to_parent`](Self::constrain_to_parent)).
+    pub fn constrained(mut self) -> Self {
+        self.constrain_to_parent = true;
         self
     }
 

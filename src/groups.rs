@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use egui::{Pos2, Rect, Vec2, vec2};
+use egui::{Pos2, Rect, Vec2, pos2, vec2};
 
 use crate::state::FlowState;
 use crate::types::{Node, NodeId};
@@ -293,6 +293,38 @@ impl<N, E> FlowState<N, E> {
             return false;
         }
         self.remove_node(id).is_some()
+    }
+
+    /// Where a node that wants to be at `pos` (flow space) ends up: `pos` itself, or
+    /// the nearest spot inside its group (below the `header`) if it is constrained.
+    /// Nodes whose group is among `moving` are left alone: they move with it.
+    pub(crate) fn clamp_in_group(
+        &self,
+        id: NodeId,
+        pos: Pos2,
+        header: f32,
+        moving: &HashSet<NodeId>,
+    ) -> Pos2 {
+        let Some(node) = self.node(id).filter(|n| n.constrain_to_parent) else {
+            return pos;
+        };
+        let Some(parent) = node.parent.filter(|p| !moving.contains(p)) else {
+            return pos;
+        };
+        let (Some(group), Some(rect)) = (self.node(parent), self.abs_rect(parent)) else {
+            return pos;
+        };
+        let top = if group.is_group && !group.collapsed {
+            header.min(rect.height())
+        } else {
+            0.0
+        };
+        let (min, max) = (pos2(rect.min.x, rect.min.y + top), rect.max);
+        // A node bigger than the room is pinned to the top-left.
+        pos2(
+            pos.x.clamp(min.x, (max.x - node.size.x).max(min.x)),
+            pos.y.clamp(min.y, (max.y - node.size.y).max(min.y)),
+        )
     }
 
     /// Convert every position to flow space, for the duration of a frame.
@@ -621,6 +653,47 @@ mod tests {
         assert_eq!(cb.nodes[0].position, pos2(120.0, 150.0));
         let new = s.paste(&cb, vec2(10.0, 10.0));
         assert_eq!(s.abs_position(new[0]), Some(pos2(130.0, 160.0)));
+    }
+
+    #[test]
+    fn a_constrained_member_is_clamped_inside_its_group_below_the_header() {
+        let (mut s, g, a, _) = grouped(); // group abs (100,100)..(400,300), a is 40x30
+        let none = HashSet::new();
+        // Unconstrained members go anywhere.
+        assert_eq!(
+            s.clamp_in_group(a, pos2(999.0, -50.0), 30.0, &none),
+            pos2(999.0, -50.0)
+        );
+        s.node_mut(a).unwrap().constrain_to_parent = true;
+        let clamp = |s: &S, p| s.clamp_in_group(a, p, 30.0, &none);
+        assert_eq!(
+            clamp(&s, pos2(150.0, 200.0)),
+            pos2(150.0, 200.0),
+            "inside is untouched"
+        );
+        assert_eq!(
+            clamp(&s, pos2(0.0, 0.0)),
+            pos2(100.0, 130.0),
+            "top-left, below the header"
+        );
+        assert_eq!(
+            clamp(&s, pos2(999.0, 999.0)),
+            pos2(360.0, 270.0),
+            "bottom-right keeps the node's size inside"
+        );
+        // A member whose group is moving along with it is left alone.
+        assert_eq!(
+            s.clamp_in_group(a, pos2(0.0, 0.0), 30.0, &HashSet::from([g])),
+            pos2(0.0, 0.0)
+        );
+        // A collapsed group has no header strip to keep clear of.
+        s.node_mut(g).unwrap().collapsed = true;
+        s.node_mut(g).unwrap().size = vec2(300.0, 200.0);
+        assert_eq!(clamp(&s, pos2(0.0, 0.0)), pos2(100.0, 100.0));
+        // Bigger than the room: pinned to the top-left.
+        s.node_mut(g).unwrap().collapsed = false;
+        s.node_mut(a).unwrap().size = vec2(500.0, 500.0);
+        assert_eq!(clamp(&s, pos2(250.0, 250.0)), pos2(100.0, 130.0));
     }
 
     #[test]
