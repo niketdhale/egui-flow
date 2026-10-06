@@ -7,6 +7,16 @@ All notable changes to egui-flow are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Auto-layout**: `FlowState::{layout_positions, auto_layout, auto_layout_animated}` with
+  `LayoutOptions` and `LayoutDirection` (`LeftToRight`, `TopToBottom`). A compact layered layout:
+  cycles are broken, nodes are layered by longest path, crossings are reduced by barycenter sweeps,
+  nodes are placed without overlapping and pulled toward their neighbours, and unconnected parts are
+  stacked. A group is laid out as one block; `LayoutOptions::scope` lays out the inside of a group
+  and refits it. `auto_layout_animated` glides there and sends `FlowEvent::LayoutFinished` (which the
+  `Editor` records); starting a drag cancels it.
+- **Node exit animation** (`FlowOptions::node_exit_animation`, on by default, needs `animate`): a removed
+  node fades out where it was instead of vanishing. The canvas keeps a copy of each visible node's
+  last painted shapes to do it, so turn it off for very large graphs.
 - **`FlowTheme`** (`FlowOptions::theme`, `Flow::theme`): colours for the canvas, edges, selection, handles,
   alignment guides, labels, minimap and the default node frame and text, all optional so
   `FlowTheme::default()` keeps the colours derived from egui's visuals. Presets `FlowTheme::{dark, light,
