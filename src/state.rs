@@ -173,6 +173,7 @@ pub struct FlowState<N, E> {
     pub(crate) initialized: bool,
     /// True while a frame runs: node positions are then absolute (see `groups.rs`).
     pub(crate) flat: bool,
+    pub(crate) layout_anim: Option<crate::layout::LayoutAnim>,
     pub(crate) interaction: Interaction,
     pub(crate) pulses: Vec<ActivePulse>,
     pub(crate) view_anim: Option<ViewAnim>,
@@ -194,6 +195,7 @@ impl<N, E> Default for FlowState<N, E> {
             fit_frames: 0,
             initialized: false,
             flat: false,
+            layout_anim: None,
             interaction: Interaction::default(),
             pulses: Vec::new(),
             view_anim: None,

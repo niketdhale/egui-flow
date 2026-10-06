@@ -111,6 +111,12 @@ impl Flow {
         let first_frame = !state.initialized;
         // Inside a frame every position is in flow space; `unflatten` restores
         // group-relative positions before returning.
+        if state.step_layout(now) {
+            events.push(FlowEvent::LayoutFinished);
+        }
+        if state.layout_anim.is_some() {
+            ui.ctx().request_repaint();
+        }
         state.flatten();
         state.sort_by_depth();
         let hidden = state.hidden_nodes();
@@ -3110,6 +3116,46 @@ mod tests {
         ] {
             let shapes = themed_pair(t, false);
             assert!(shapes.iter().any(|sh| matches!(sh, Shape::Rect(r) if Some(r.fill) == t.background && r.rect.width() >= 799.0)));
+        }
+    }
+
+    #[test]
+    fn an_animated_layout_runs_with_the_canvas_and_reports_once_when_done() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(0.0, 0.0), "a");
+        let b = s.add_node(pos2(10.0, 200.0), "b");
+        let c = s.add_node(pos2(20.0, 400.0), "c");
+        s.connect(a, b, ());
+        s.connect(b, c, ());
+        for i in 0..3 {
+            run_frame_at(&ctx, &mut s, vec![], false, Some(i as f64 * 0.1), true);
+        }
+        let opts = crate::LayoutOptions::default();
+        let target: std::collections::HashMap<_, _> =
+            s.layout_positions(&opts).into_iter().collect();
+        let start = s.node(c).unwrap().position;
+        assert_ne!(start, target[&c], "the layout has somewhere to go");
+        s.auto_layout_animated(&opts, 0.5);
+
+        let mut finished = 0;
+        let mut last = start;
+        let mut moved_midway = false;
+        for (i, t) in [1.0, 1.1, 1.25, 1.4, 1.6, 2.0, 2.5].into_iter().enumerate() {
+            let events = run_frame_at(&ctx, &mut s, vec![], false, Some(t), true);
+            finished += events
+                .iter()
+                .filter(|e| matches!(e, FlowEvent::LayoutFinished))
+                .count();
+            last = s.node(c).unwrap().position;
+            if i == 2 {
+                moved_midway = last != start && last != target[&c];
+            }
+        }
+        assert!(moved_midway, "in motion halfway: {last:?}");
+        assert_eq!(finished, 1, "reported exactly once");
+        for id in [a, b, c] {
+            assert_eq!(s.node(id).unwrap().position, target[&id]);
         }
     }
 
