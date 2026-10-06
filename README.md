@@ -20,7 +20,7 @@ cargo run --example icons   # built-in icon gallery
 
 One continuous take through the whole library, recorded from the real app ([`examples/gateway`](examples/gateway.rs)):
 
-![An 80-second tour of egui-flow: pan and zoom, drag with alignment guides, connect, reconnect, edge and line styles, route pulses, resize, nudge, highlight, box select, copy and paste, undo and redo, delete, groups (move, collapse, drag in and out, wrap, ungroup) and crisp text at high zoom](docs/media/tour.gif)
+![A 104-second tour of egui-flow: pan and zoom, drag with alignment guides, connect, reconnect, edge and line styles, route pulses, resize, nudge, highlight, box select, copy and paste, undo and redo, delete, groups (move, collapse, drag in and out, constrained members, wrap, ungroup), auto layout, themes and crisp text at high zoom](docs/media/tour.gif)
 
 In order, with where to look:
 
@@ -41,7 +41,10 @@ In order, with where to look:
 | Groups | `Node::{is_group, parent}`, `FlowState::add_group`; drag the header and the members follow |
 | Collapse | the header toggle (`FlowEvent::GroupToggled`); edges to hidden members attach to the group |
 | Drag in and out | drop a node on a group to put it in, outside to take it out (`FlowEvent::ParentChanged`, `FlowOptions::group_drop`) |
+| Constrained member | `Node::constrained()`: a member cannot be dragged out of its group |
 | Group selected, ungroup | `FlowState::group_selected(..)`, `FlowState::ungroup(..)` |
+| Auto layout | `FlowState::auto_layout_animated(..)`: a scrambled graph glides into layered order, horizontal or vertical |
+| Themes | `FlowTheme::{dark, light, blueprint}` or your own colours |
 | Crisp text | `FlowOptions::crisp_text`: text is laid out again at the zoomed size, see below |
 
 ### Crisp text when zoomed
@@ -59,6 +62,9 @@ Painter-drawn, so they need no font and never render as empty boxes.
 | React Flow | egui-flow |
 |---|---|
 | Crisp text when zoomed | `FlowOptions::crisp_text` (on by default) re-lays out text at the zoomed size instead of stretching the 1x raster; the `gateway` example has a "Crisp text" checkbox to compare |
+| Auto layout | `state.auto_layout(&LayoutOptions::default())`, or `auto_layout_animated(&opts, 0.7)` to glide; `LayoutDirection::{LeftToRight, TopToBottom}`, `scope` to lay out inside a group, `layout_positions` to preview |
+| Exit animation | removed nodes fade out where they were (`FlowOptions::node_exit_animation`, needs `animate`) |
+| Themes | `FlowOptions::theme = FlowTheme::{dark(), light(), blueprint()}` or your own `FlowTheme { background, grid, edge, selection, handle, guide, node_fill, text, .. }`; every field is optional, the default keeps egui's colours |
 | Groups / sub-flows | `Node::{is_group, parent, collapsed}`; positions inside a group are relative to it; nesting, collapse, drag in and out, `group_selected`, `ungroup`, `fit_group` (see Groups below) |
 | Pan / zoom viewport | drag background or middle mouse to pan, wheel / pinch to zoom (zoom-to-cursor), `fit_view()` |
 | Custom nodes | implement `FlowViewer::node_ui` with any egui widgets |
@@ -213,8 +219,37 @@ What the canvas does for you:
 * Dropping a node on a group puts it in that group; dropping it outside its group takes it out (`FlowOptions::group_drop`). Both report `FlowEvent::ParentChanged`.
 * Dragging, nudging, copying and deleting a group take its members along. To delete a group but keep its members, `ungroup` it first.
 * A box select picks an open group only when the box covers all of it, so a box drawn inside one selects its members.
+* `node.constrain_to_parent = true` (or `Node::constrained()`) keeps a member inside its group, below the header, while it is dragged or nudged.
 
 Inside `Flow::show` (including your `FlowViewer` callbacks) node positions are in flow space; outside it, use `FlowState::abs_position` / `abs_rect` for flow-space positions of nodes in groups. `FlowState::bounds` already accounts for groups and ignores hidden members.
+
+## Auto layout
+
+```rust
+use egui_flow::{LayoutDirection, LayoutOptions};
+
+state.auto_layout(&LayoutOptions::default());                    // jump there
+state.auto_layout_animated(&LayoutOptions::default(), 0.7);      // or glide; FlowEvent::LayoutFinished at the end
+state.auto_layout(&LayoutOptions { direction: LayoutDirection::TopToBottom, ..Default::default() });
+state.auto_layout(&LayoutOptions { scope: Some(group), ..Default::default() }); // inside one group, then refit it
+let plan = state.layout_positions(&LayoutOptions::default());    // preview, moves nothing
+```
+
+Edges point from source to target, so a source ends up left of (or above) its targets. Cycles are broken, crossings are reduced, nodes never overlap, and parts of the graph that are not connected are stacked. Sizes come from the last frame, so lay out after the nodes have been shown once. A group is one block of its current size; its members keep their places inside it. A running animated layout is cancelled by starting to drag a node. `Editor` records `LayoutFinished` as one undo step; after a plain `auto_layout` call `editor.commit(&state)`.
+
+## Themes
+
+```rust
+use egui_flow::FlowTheme;
+
+let opts = FlowOptions { theme: FlowTheme::blueprint(), ..Default::default() };   // or dark(), light()
+let opts = FlowOptions {
+    theme: FlowTheme { background: Some(my_bg), selection: Some(my_accent), ..Default::default() },
+    ..Default::default()
+};
+```
+
+Every field is optional; `None` keeps the colour derived from egui's `Visuals`. The theme covers the canvas, grid, edges, selection, handles, alignment guides, labels, minimap, and the default node frame and text. Colours you set yourself in `node_ui` or `node_frame` still win.
 
 ## Multiple connection points
 
@@ -275,4 +310,4 @@ Everything above that moves can be disabled at once with `FlowOptions { animate:
 * Selectable labels are disabled inside nodes so dragging on text moves the node; re-enable in `node_ui` if needed.
 * Resizing sets a size; it does not make node content scale.
 * No node exit animation (removed nodes vanish immediately) or per-edge dash patterns.
-* Not yet implemented: auto-layout, and constraining a member to stay inside its group while dragging.
+* Not yet implemented: edge routing around nodes, and nodes of different kinds sharing one layout (everything in a scope is laid out by its edges alone).

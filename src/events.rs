@@ -44,6 +44,8 @@ pub enum FlowEvent<N, E> {
         node: NodeId,
         parent: Option<NodeId>,
     },
+    /// An animated [`auto_layout_animated`](crate::FlowState::auto_layout_animated) arrived.
+    LayoutFinished,
     /// Ctrl/Cmd+Z. Handled for you by [`Editor::process`](crate::Editor::process).
     UndoRequested,
     /// Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y.

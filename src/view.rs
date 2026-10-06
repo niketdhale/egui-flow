@@ -76,6 +76,12 @@ impl Flow {
         self
     }
 
+    /// Colours for the canvas (see [`FlowTheme`](crate::FlowTheme)).
+    pub fn theme(mut self, theme: crate::theme::FlowTheme) -> Self {
+        self.opts.theme = theme;
+        self
+    }
+
     /// Re-lay out text at the zoomed size so it stays sharp (default on).
     pub fn crisp_text(mut self, on: bool) -> Self {
         self.opts.crisp_text = on;
@@ -105,6 +111,12 @@ impl Flow {
         let first_frame = !state.initialized;
         // Inside a frame every position is in flow space; `unflatten` restores
         // group-relative positions before returning.
+        if state.step_layout(now) {
+            events.push(FlowEvent::LayoutFinished);
+        }
+        if state.layout_anim.is_some() {
+            ui.ctx().request_repaint();
+        }
         state.flatten();
         state.sort_by_depth();
         let hidden = state.hidden_nodes();
@@ -159,7 +171,28 @@ impl Flow {
             }
         }
 
-        // --- node fade-in bookkeeping ---------------------------------------
+        // --- node fade-in / fade-out bookkeeping ----------------------------
+        let exit_on = o.animate && o.node_exit_animation;
+        let gone: Vec<NodeId> = state
+            .known_nodes
+            .iter()
+            .filter(|id| !state.nodes.iter().any(|n| n.id == **id))
+            .copied()
+            .collect();
+        for id in gone {
+            if let Some(shapes) = state.exit_cache.remove(&id)
+                && exit_on
+            {
+                state.ghosts.push(crate::exit::Ghost {
+                    shapes,
+                    start: None,
+                });
+            }
+        }
+        if !exit_on {
+            state.exit_cache.clear();
+            state.ghosts.clear();
+        }
         state
             .known_nodes
             .retain(|id| state.nodes.iter().any(|n| n.id == *id));
@@ -251,15 +284,23 @@ impl Flow {
 
         let visuals = ui.visuals().clone();
         let painter = ui.painter_at(canvas);
-        painter.rect_filled(canvas, 0.0, visuals.extreme_bg_color);
+        let theme = o.theme;
+        painter.rect_filled(
+            canvas,
+            0.0,
+            theme.background.unwrap_or(visuals.extreme_bg_color),
+        );
         paint_background(
             &painter,
             canvas,
             &state.viewport,
             &o,
-            visuals.widgets.noninteractive.bg_stroke.color,
+            theme
+                .grid
+                .unwrap_or(visuals.widgets.noninteractive.bg_stroke.color),
         );
-        let sel_color = visuals.selection.stroke.color;
+        let sel_color = theme.selection.unwrap_or(visuals.selection.stroke.color);
+        theme.apply_to_node_visuals(&mut cui.style_mut().visuals);
 
         // --- pass 1: node interaction (before drawing, so drags don't lag) --
         let handles: Handles = state
@@ -367,9 +408,23 @@ impl Flow {
                     }
                 }
                 state.interaction.guides = guides;
-                for (oid, pos) in proposed {
+                // Members that must stay in their group stop at its edges.
+                let moving_ids: HashSet<NodeId> = proposed.iter().map(|(i, _)| *i).collect();
+                let placed: Vec<(NodeId, Pos2)> = proposed
+                    .into_iter()
+                    .map(|(oid, pos)| {
+                        let p = state.clamp_in_group(
+                            oid,
+                            pos + offset,
+                            o.group_header_height,
+                            &moving_ids,
+                        );
+                        (oid, p)
+                    })
+                    .collect();
+                for (oid, pos) in placed {
                     if let Some(n) = state.nodes.iter_mut().find(|n| n.id == oid) {
-                        n.position = pos + offset;
+                        n.position = pos;
                         dragged.push(oid);
                     }
                 }
@@ -559,12 +614,14 @@ impl Flow {
                 continue;
             }
             let hovered = hovered_edge == Some(*i);
-            let default_color = visuals
-                .widgets
-                .noninteractive
-                .fg_stroke
-                .color
-                .gamma_multiply(0.7);
+            let default_color = theme.edge.unwrap_or_else(|| {
+                visuals
+                    .widgets
+                    .noninteractive
+                    .fg_stroke
+                    .color
+                    .gamma_multiply(0.7)
+            });
             let color = if e.selected {
                 sel_color
             } else {
@@ -635,7 +692,8 @@ impl Flow {
                 cp.rect_filled(
                     Rect::from_center_size(at, galley.size() + vec2(8.0, 4.0)),
                     3.0,
-                    ls.background.unwrap_or(visuals.window_fill),
+                    ls.background
+                        .unwrap_or(theme.label_background.unwrap_or(visuals.window_fill)),
                 );
                 cp.galley(at - galley.size() / 2.0, galley, text_color);
             }
@@ -706,7 +764,7 @@ impl Flow {
             cp.rect_filled(
                 Rect::from_center_size(center, galley.size() + vec2(8.0, 4.0)),
                 3.0,
-                visuals.window_fill,
+                theme.label_background.unwrap_or(visuals.window_fill),
             );
             cp.galley(center - galley.size() / 2.0, galley, visuals.text_color());
         }
@@ -715,9 +773,29 @@ impl Flow {
         }
 
         // --- pass 2b: node contents ----------------------------------------
+        // Removed nodes fade out where they were.
+        if !state.ghosts.is_empty() {
+            for mut g in std::mem::take(&mut state.ghosts) {
+                let start = *g.start.get_or_insert(now);
+                let t = ((now - start) / NODE_FADE_SECS) as f32;
+                if t >= 1.0 {
+                    continue;
+                }
+                let opacity = 1.0 - t * t * (3.0 - 2.0 * t);
+                for shape in &g.shapes {
+                    let mut shape = shape.clone();
+                    crate::exit::fade_shape(&mut shape, opacity);
+                    cp.add(shape);
+                }
+                state.ghosts.push(g);
+            }
+            ui.ctx().request_repaint();
+        }
         let mut toggles: Vec<(NodeId, bool)> = Vec::new();
         for i in 0..state.nodes.len() {
             if hidden.contains(&state.nodes[i].id) {
+                // Hidden nodes have no on-screen copy to fade out.
+                state.exit_cache.remove(&state.nodes[i].id);
                 continue;
             }
             let node = &mut state.nodes[i];
@@ -731,6 +809,12 @@ impl Flow {
             let content_w = fixed.map_or(MAX_NODE_WIDTH, |f| f.x.max(MAX_NODE_WIDTH));
             let content = Rect::from_min_size(node.position, vec2(content_w, 10_000.0));
             let margin = frame.total_margin().sum();
+            let shapes_from = exit_on
+                .then(|| {
+                    ui.ctx()
+                        .graphics(|g| g.get(layer_id).map(|l| l.next_idx().0))
+                })
+                .flatten();
             let inner = cui.scope_builder(
                 UiBuilder::new()
                     .id_salt(("flow_node", node.id))
@@ -755,6 +839,19 @@ impl Flow {
             );
             let rect = inner.inner.response.rect;
             node.size = rect.size();
+            if let Some(from) = shapes_from {
+                let painted = ui.ctx().graphics(|g| {
+                    g.get(layer_id).map(|l| {
+                        l.all_entries()
+                            .skip(from)
+                            .map(|c| c.shape.clone())
+                            .collect::<Vec<_>>()
+                    })
+                });
+                if let Some(shapes) = painted {
+                    state.exit_cache.insert(node.id, shapes);
+                }
+            }
             if node.is_group {
                 // Collapse / expand toggle in the header's top-right corner.
                 let toggle = Rect::from_min_size(
@@ -974,7 +1071,9 @@ impl Flow {
                 let fill = if active || valid_target {
                     sel_color
                 } else {
-                    visuals.widgets.inactive.fg_stroke.color
+                    theme
+                        .handle
+                        .unwrap_or(visuals.widgets.inactive.fg_stroke.color)
                 }
                 .gamma_multiply(alpha);
                 cp.circle_filled(pos, r, fill);
@@ -1147,7 +1246,7 @@ impl Flow {
                 [a, b],
                 Stroke::new(
                     1.0 / state.viewport.zoom.max(1e-3),
-                    Color32::from_rgb(255, 90, 160),
+                    theme.guide.unwrap_or(Color32::from_rgb(255, 90, 160)),
                 ),
             );
         }
@@ -1227,6 +1326,16 @@ impl Flow {
                 for n in state.nodes.iter_mut().filter(|n| moving.contains(&n.id)) {
                     n.position += delta;
                 }
+                let moving_set: HashSet<NodeId> = moving.iter().copied().collect();
+                for id in &moving {
+                    if let Some(p) = state.node(*id).map(|n| n.position) {
+                        let clamped =
+                            state.clamp_in_group(*id, p, o.group_header_height, &moving_set);
+                        if let Some(n) = state.node_mut(*id) {
+                            n.position = clamped;
+                        }
+                    }
+                }
                 events.push(FlowEvent::NodesDragged(ids.clone()));
                 events.push(FlowEvent::NodesDragStopped(ids));
             }
@@ -1268,7 +1377,7 @@ impl Flow {
             controls(ui, id, canvas, state, &o);
         }
         if o.minimap {
-            minimap(ui, id, canvas, state, &*viewer, sel_color);
+            minimap(ui, id, canvas, state, &*viewer, sel_color, &theme);
         }
 
         let selection_after = state.selection_snapshot();
@@ -1523,6 +1632,7 @@ fn minimap<N, E, V: FlowViewer<N, E>>(
     state: &mut FlowState<N, E>,
     viewer: &V,
     accent: Color32,
+    theme: &crate::theme::FlowTheme,
 ) {
     const SIZE: Vec2 = vec2(160.0, 110.0);
     let hidden_nodes = state.hidden_nodes();
@@ -1538,7 +1648,10 @@ fn minimap<N, E, V: FlowViewer<N, E>>(
             painter.rect(
                 rect,
                 4.0,
-                v.window_fill.gamma_multiply(0.92),
+                theme
+                    .minimap_background
+                    .unwrap_or(v.window_fill)
+                    .gamma_multiply(0.92),
                 v.widgets.noninteractive.bg_stroke,
                 StrokeKind::Inside,
             );
@@ -2783,6 +2896,69 @@ mod tests {
     }
 
     #[test]
+    fn a_constrained_member_cannot_be_dragged_out_of_its_group() {
+        let Scene {
+            ctx,
+            mut s,
+            group,
+            child,
+            ..
+        } = group_scene();
+        s.node_mut(child).unwrap().constrain_to_parent = true;
+        let from = centre(&s, child);
+        let events = drag(&ctx, &mut s, from, pos2(760.0, 520.0)); // far outside
+        let (g, c) = (s.abs_rect(group).unwrap(), s.abs_rect(child).unwrap());
+        assert!(g.contains_rect(c), "{c:?} escaped {g:?}");
+        assert!(
+            (c.max.x - g.max.x).abs() < 0.5 && (c.max.y - g.max.y).abs() < 0.5,
+            "pushed into the corner: {c:?}"
+        );
+        assert_eq!(s.node(child).unwrap().parent, Some(group));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, FlowEvent::ParentChanged { .. }))
+        );
+        // Dragging toward the top stops below the header.
+        let from = centre(&s, child);
+        drag(&ctx, &mut s, from, pos2(from.x, -200.0));
+        let c = s.abs_rect(child).unwrap();
+        assert!((c.min.y - (g.min.y + 30.0)).abs() < 0.5, "{c:?}");
+    }
+
+    #[test]
+    fn arrow_keys_stop_a_constrained_member_at_the_group_edge() {
+        let Scene {
+            ctx,
+            mut s,
+            group,
+            child,
+            ..
+        } = group_scene();
+        s.node_mut(child).unwrap().constrain_to_parent = true;
+        s.clear_selection();
+        s.node_mut(child).unwrap().selected = true;
+        run_frame(
+            &ctx,
+            &mut s,
+            vec![Event::PointerMoved(pos2(650.0, 500.0))],
+            false,
+        );
+        let key = |k| Event::Key {
+            key: k,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::SHIFT,
+        };
+        for _ in 0..40 {
+            run_frame(&ctx, &mut s, vec![key(egui::Key::ArrowRight)], false);
+        }
+        let (g, c) = (s.abs_rect(group).unwrap(), s.abs_rect(child).unwrap());
+        assert!((c.max.x - g.max.x).abs() < 0.5, "{c:?} vs {g:?}");
+    }
+
+    #[test]
     fn nudging_a_group_moves_its_members_too() {
         let Scene {
             ctx,
@@ -2817,6 +2993,348 @@ mod tests {
         );
         assert_eq!(s.abs_position(group), Some(g0 + vec2(10.0, 0.0)));
         assert_eq!(s.abs_position(child), Some(c0 + vec2(10.0, 0.0)));
+    }
+
+    // ---- theme ---------------------------------------------------------------
+
+    fn solid(c: &egui::epaint::ColorMode) -> Option<Color32> {
+        match c {
+            egui::epaint::ColorMode::Solid(c) => Some(*c),
+            _ => None,
+        }
+    }
+
+    /// Render two nodes joined by a straight edge with `theme`, returning the shapes.
+    fn themed_pair(theme: crate::FlowTheme, select_a: bool) -> Vec<Shape> {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(60.0, 100.0), "alpha");
+        let b = s.add_node(pos2(400.0, 100.0), "beta");
+        let e = s.connect(a, b, ()).unwrap();
+        s.edge_mut(e).unwrap().kind = Some(EdgeKind::Straight);
+        s.edge_mut(e).unwrap().label = Some("lbl".into());
+        s.node_mut(a).unwrap().selected = select_a;
+        let opts = FlowOptions {
+            theme,
+            minimap: true,
+            controls: false,
+            ..Default::default()
+        };
+        let mut shapes = Vec::new();
+        for _ in 0..4 {
+            shapes = run_full(&ctx, &mut s, vec![], None, opts.clone()).1;
+        }
+        shapes
+    }
+
+    #[test]
+    fn the_default_theme_paints_exactly_what_it_did_before() {
+        let plain = themed_pair(crate::FlowTheme::default(), true);
+        let ctx = Context::default();
+        let visuals = ctx.style().visuals.clone();
+        // Canvas fill is egui's extreme background, grid dots are the noninteractive stroke.
+        assert!(
+            plain.iter().any(|sh| matches!(sh, Shape::Rect(r) if r.fill == visuals.extreme_bg_color && r.rect.width() >= 799.0)),
+            "canvas fill"
+        );
+        assert!(
+            plain.iter().any(|sh| matches!(sh, Shape::Circle(c) if c.fill == visuals.widgets.noninteractive.bg_stroke.color)),
+            "grid dots"
+        );
+        assert!(
+            plain
+                .iter()
+                .any(|sh| matches!(sh, Shape::Rect(r) if r.fill == visuals.window_fill)),
+            "node frame fill"
+        );
+    }
+
+    #[test]
+    fn every_theme_colour_reaches_the_canvas() {
+        let theme = crate::FlowTheme {
+            background: Some(Color32::from_rgb(1, 1, 1)),
+            grid: Some(Color32::from_rgb(2, 2, 2)),
+            edge: Some(Color32::from_rgb(3, 3, 3)),
+            selection: Some(Color32::from_rgb(4, 4, 4)),
+            handle: Some(Color32::from_rgb(5, 5, 5)),
+            label_background: Some(Color32::from_rgb(6, 6, 6)),
+            minimap_background: Some(Color32::from_rgb(7, 7, 7)),
+            node_fill: Some(Color32::from_rgb(8, 8, 8)),
+            node_stroke: Some(Color32::from_rgb(9, 9, 9)),
+            text: Some(Color32::from_rgb(10, 10, 10)),
+            ..Default::default()
+        };
+        let shapes = themed_pair(theme, true);
+        let c = |v: u8| Color32::from_rgb(v, v, v);
+        let has = |f: &dyn Fn(&Shape) -> bool| shapes.iter().any(f);
+
+        assert!(
+            has(&|s| matches!(s, Shape::Rect(r) if r.fill == c(1) && r.rect.width() >= 799.0)),
+            "background"
+        );
+        assert!(
+            has(&|s| matches!(s, Shape::Circle(ci) if ci.fill == c(2))),
+            "grid dots"
+        );
+        assert!(
+            has(
+                &|s| matches!(s, Shape::Path(p) if !p.closed && p.points.len() == 2 && solid(&p.stroke.color) == Some(c(3)))
+            ),
+            "edge"
+        );
+        assert!(
+            has(
+                &|s| matches!(s, Shape::Rect(r) if r.stroke.color == c(4) && r.stroke.width >= 2.0)
+            ),
+            "selection outline"
+        );
+        assert!(
+            has(&|s| matches!(s, Shape::Circle(ci) if ci.fill == c(5))),
+            "idle handle"
+        );
+        assert!(
+            has(&|s| matches!(s, Shape::Rect(r) if r.fill == c(6))),
+            "edge label background"
+        );
+        assert!(
+            has(
+                &|s| matches!(s, Shape::Rect(r) if (r.rect.size() - vec2(160.0, 110.0)).length() < 0.5
+                && r.fill.to_srgba_unmultiplied()[..3].iter().all(|v| v.abs_diff(7) <= 1))
+            ),
+            "minimap panel (it fades in, so compare the colour without alpha)"
+        );
+        assert!(
+            has(&|s| matches!(s, Shape::Rect(r) if r.fill == c(8))),
+            "node fill"
+        );
+        assert!(
+            has(&|s| matches!(s, Shape::Rect(r) if r.stroke.color == c(9))),
+            "node outline"
+        );
+        let alpha = text_shape(&shapes, "alpha").expect("node text");
+        // A plain label leaves its colour to the text shape's fallback.
+        assert_eq!(alpha.fallback_color, c(10), "node text");
+    }
+
+    #[test]
+    fn the_guide_colour_is_themeable() {
+        let theme = crate::FlowTheme {
+            guide: Some(Color32::from_rgb(11, 12, 13)),
+            ..Default::default()
+        };
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(50.0, 100.0), "a");
+        let b = s.add_node(pos2(400.0, 250.0), "b");
+        let opts = FlowOptions {
+            alignment_guides: true,
+            theme,
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            run_frame_with(&ctx, &mut s, vec![], None, opts.clone());
+        }
+        let top = s.node(a).unwrap().position.y;
+        let grab = s.node(b).unwrap().rect().center();
+        let near = grab + vec2(-20.0, top + 4.0 - 250.0);
+        let btn = |pos, pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        run_frame_with(
+            &ctx,
+            &mut s,
+            vec![Event::PointerMoved(grab)],
+            None,
+            opts.clone(),
+        );
+        run_frame_with(&ctx, &mut s, vec![btn(grab, true)], None, opts.clone());
+        let mut shapes = Vec::new();
+        for i in 1..=6 {
+            let p = grab + (near - grab) * (i as f32 / 6.0);
+            shapes = run_full(
+                &ctx,
+                &mut s,
+                vec![Event::PointerMoved(p)],
+                None,
+                opts.clone(),
+            )
+            .1;
+        }
+        assert!(shapes.iter().any(|sh| matches!(sh, Shape::LineSegment { stroke, .. } if stroke.color == Color32::from_rgb(11, 12, 13))));
+        assert!(!shapes.iter().any(|sh| matches!(sh, Shape::LineSegment { stroke, .. } if stroke.color == Color32::from_rgb(255, 90, 160))), "the default pink is gone");
+    }
+
+    #[test]
+    fn preset_themes_render_with_their_background() {
+        for t in [
+            crate::FlowTheme::dark(),
+            crate::FlowTheme::light(),
+            crate::FlowTheme::blueprint(),
+        ] {
+            let shapes = themed_pair(t, false);
+            assert!(shapes.iter().any(|sh| matches!(sh, Shape::Rect(r) if Some(r.fill) == t.background && r.rect.width() >= 799.0)));
+        }
+    }
+
+    #[test]
+    fn an_animated_layout_runs_with_the_canvas_and_reports_once_when_done() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(0.0, 0.0), "a");
+        let b = s.add_node(pos2(10.0, 200.0), "b");
+        let c = s.add_node(pos2(20.0, 400.0), "c");
+        s.connect(a, b, ());
+        s.connect(b, c, ());
+        for i in 0..3 {
+            run_frame_at(&ctx, &mut s, vec![], false, Some(i as f64 * 0.1), true);
+        }
+        let opts = crate::LayoutOptions::default();
+        let target: std::collections::HashMap<_, _> =
+            s.layout_positions(&opts).into_iter().collect();
+        let start = s.node(c).unwrap().position;
+        assert_ne!(start, target[&c], "the layout has somewhere to go");
+        s.auto_layout_animated(&opts, 0.5);
+
+        let mut finished = 0;
+        let mut last = start;
+        let mut moved_midway = false;
+        for (i, t) in [1.0, 1.1, 1.25, 1.4, 1.6, 2.0, 2.5].into_iter().enumerate() {
+            let events = run_frame_at(&ctx, &mut s, vec![], false, Some(t), true);
+            finished += events
+                .iter()
+                .filter(|e| matches!(e, FlowEvent::LayoutFinished))
+                .count();
+            last = s.node(c).unwrap().position;
+            if i == 2 {
+                moved_midway = last != start && last != target[&c];
+            }
+        }
+        assert!(moved_midway, "in motion halfway: {last:?}");
+        assert_eq!(finished, 1, "reported exactly once");
+        for id in [a, b, c] {
+            assert_eq!(s.node(id).unwrap().position, target[&id]);
+        }
+    }
+
+    // ---- exit animation ------------------------------------------------------
+
+    fn label_opacity(shapes: &[Shape], text: &str) -> Option<f32> {
+        text_shape(shapes, text).map(|t| t.opacity_factor)
+    }
+
+    /// Two nodes shown for a few frames, then `beta` removed. Returns the opacity of
+    /// beta's label in frames at the given times after the removal.
+    fn opacity_after_removal(opts: FlowOptions, times: &[f64]) -> Vec<Option<f32>> {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        s.add_node(pos2(40.0, 40.0), "alpha");
+        let beta = s.add_node(pos2(300.0, 40.0), "beta");
+        for i in 0..4 {
+            run_full(&ctx, &mut s, vec![], Some(i as f64 * 0.1), opts.clone());
+        }
+        s.remove_node(beta);
+        times
+            .iter()
+            .map(|t| {
+                label_opacity(
+                    &run_full(&ctx, &mut s, vec![], Some(*t), opts.clone()).1,
+                    "beta",
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_removed_node_fades_out_where_it_was_and_then_disappears() {
+        let opts = FlowOptions {
+            minimap: false,
+            controls: false,
+            ..Default::default()
+        };
+        let o = opacity_after_removal(opts, &[1.0, 1.1, 1.2, 1.6]);
+        assert!(
+            o[0].is_some_and(|v| v > 0.99),
+            "starts fully visible: {o:?}"
+        );
+        let (a, b) = (o[1].expect("still drawn"), o[2].expect("still drawn"));
+        assert!(a < 0.95 && a > 0.3, "fading: {a}");
+        assert!(b < a, "and getting fainter: {a} then {b}");
+        assert_eq!(o[3], None, "gone once the fade is over");
+    }
+
+    #[test]
+    fn removal_is_immediate_without_animation_or_with_the_exit_option_off() {
+        let off = FlowOptions {
+            animate: false,
+            minimap: false,
+            controls: false,
+            ..Default::default()
+        };
+        assert_eq!(opacity_after_removal(off, &[1.0, 1.1]), vec![None, None]);
+        let no_exit = FlowOptions {
+            node_exit_animation: false,
+            minimap: false,
+            controls: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            opacity_after_removal(no_exit, &[1.0, 1.1]),
+            vec![None, None]
+        );
+    }
+
+    #[test]
+    fn the_ghost_is_dropped_when_the_fade_ends() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(40.0, 40.0), "alpha");
+        let opts = FlowOptions::default();
+        for i in 0..3 {
+            run_full(&ctx, &mut s, vec![], Some(i as f64 * 0.1), opts.clone());
+        }
+        s.remove_node(a);
+        run_full(&ctx, &mut s, vec![], Some(1.0), opts.clone());
+        assert_eq!(s.ghosts.len(), 1);
+        run_full(&ctx, &mut s, vec![], Some(2.0), opts.clone());
+        assert!(s.ghosts.is_empty() && s.exit_cache.is_empty());
+    }
+
+    #[test]
+    fn hidden_members_of_a_deleted_collapsed_group_leave_no_ghost() {
+        let Scene {
+            ctx, mut s, group, ..
+        } = group_scene();
+        let opts = FlowOptions {
+            minimap: false,
+            controls: false,
+            ..Default::default()
+        };
+        s.set_collapsed(group, true);
+        for i in 0..4 {
+            run_full(
+                &ctx,
+                &mut s,
+                vec![],
+                Some(10.0 + i as f64 * 0.1),
+                opts.clone(),
+            );
+        }
+        s.clear_selection();
+        s.node_mut(group).unwrap().selected = true;
+        s.delete_selected(); // takes the member with it
+        let shapes = run_full(&ctx, &mut s, vec![], Some(11.0), opts.clone()).1;
+        let later = run_full(&ctx, &mut s, vec![], Some(11.1), opts).1;
+        assert!(
+            label_opacity(&shapes, "group").is_some(),
+            "the group fades out"
+        );
+        assert!(
+            label_opacity(&shapes, "child").is_none() && label_opacity(&later, "child").is_none(),
+            "its hidden member does not reappear"
+        );
     }
 
     #[test]

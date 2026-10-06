@@ -34,11 +34,14 @@
 mod crisp;
 mod editor;
 mod events;
+mod exit;
 mod geometry;
 mod groups;
 mod icons;
+pub mod layout;
 mod options;
 mod state;
+mod theme;
 mod types;
 mod view;
 mod viewer;
@@ -47,10 +50,12 @@ pub use editor::Editor;
 pub use events::{FlowEvent, FlowResponse};
 pub use geometry::{edge_path, point_at};
 pub use icons::{Icon, icon, icon_button};
+pub use layout::{LayoutDirection, LayoutOptions};
 pub use options::{Background, FlowOptions, HandleVisibility};
 pub use state::{
     Clipboard, FlowState, PulseDirection, PulseEasing, PulseOverflow, PulseShape, PulseStyle,
 };
+pub use theme::FlowTheme;
 pub use types::*;
 pub use view::Flow;
 pub use viewer::FlowViewer;

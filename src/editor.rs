@@ -161,6 +161,7 @@ impl<N: Clone, E: Clone> Editor<N, E> {
                 | FlowEvent::Connected(_)
                 | FlowEvent::Reconnected { .. }
                 | FlowEvent::ParentChanged { .. }
+                | FlowEvent::LayoutFinished
                 | FlowEvent::GroupToggled { .. }
                 | FlowEvent::Deleted { .. }
                 | FlowEvent::NodeResized { finished: true, .. } => {
@@ -308,6 +309,34 @@ mod tests {
         assert_eq!(s.abs_position(a), Some(pos2(0.0, 0.0)), "back where it was");
         assert!(ed.redo(&mut s));
         assert_eq!(s.node(a).unwrap().parent, Some(g));
+    }
+
+    #[test]
+    fn a_finished_layout_is_one_undo_step() {
+        let mut s = state();
+        let a = s.nodes[0].id;
+        let b = s.add_node(pos2(5.0, 5.0), "b");
+        s.node_mut(a).unwrap().size = egui::vec2(50.0, 30.0);
+        s.node_mut(b).unwrap().size = egui::vec2(50.0, 30.0);
+        s.connect(a, b, ());
+        let mut ed = Editor::new(&s);
+        let before: Vec<_> = s.nodes.iter().map(|n| n.position).collect();
+        s.auto_layout(&crate::LayoutOptions::default());
+        assert_ne!(
+            s.nodes.iter().map(|n| n.position).collect::<Vec<_>>(),
+            before
+        );
+        assert!(ed.process(&mut s, &[FlowEvent::LayoutFinished]));
+        assert!(ed.undo(&mut s));
+        assert_eq!(
+            s.nodes.iter().map(|n| n.position).collect::<Vec<_>>(),
+            before
+        );
+        assert!(ed.redo(&mut s));
+        assert_ne!(
+            s.nodes.iter().map(|n| n.position).collect::<Vec<_>>(),
+            before
+        );
     }
 
     #[test]

@@ -7,13 +7,17 @@
 //! * Ctrl/Cmd+Z / Shift+Z undo and redo, Ctrl/Cmd+C / V / X / D copy, paste, cut, duplicate
 //! * drag a node near another to see alignment guides; arrow keys nudge selected nodes
 //! * the Powertrain group: drag its header, collapse it, drop nodes in or out; "Group" wraps the selection
+//! * members of Powertrain are constrained: they cannot be dragged out of it
+//! * "Auto layout" arranges the graph by its edges (tick "Vertical" for top to bottom)
+//! * the Theme menu restyles the canvas; deleted nodes fade out
 //! * zoom in far: text stays sharp (untick "Crisp text" to compare)
 //! * "Highlight connected" dims everything unrelated to the selected/hovered node
 
 use egui::{Color32, Ui};
 use egui_flow::{
     ArrowStyle, Background, EdgeId, EdgeKind, Editor, Flow, FlowEvent, FlowOptions, FlowState,
-    FlowViewer, Handle, LineStyle, Node, NodeId, PulseShape, PulseStyle, Side,
+    FlowTheme, FlowViewer, Handle, LayoutDirection, LayoutOptions, LineStyle, Node, NodeId,
+    PulseShape, PulseStyle, Side,
 };
 
 #[derive(Clone, Copy, PartialEq)]
@@ -96,6 +100,9 @@ pub struct App {
     pub editor: Editor<Data, ()>,
     pub highlight: bool,
     pub crisp: bool,
+    /// 0 egui's own colours, 1 dark, 2 light, 3 blueprint.
+    pub theme: usize,
+    pub vertical: bool,
     pub engine: NodeId,
     pub route: Vec<EdgeId>,
     pub brake_edge: EdgeId,
@@ -136,6 +143,8 @@ impl App {
             },
         );
         s.set_parent(engine, Some(powertrain));
+        s.node_mut(engine).unwrap().constrain_to_parent = true;
+        s.node_mut(brake).unwrap().constrain_to_parent = true;
         s.set_parent(brake, Some(powertrain));
 
         let wire = |s: &mut FlowState<Data, ()>, a, b, kind| {
@@ -179,6 +188,8 @@ impl App {
             state: s,
             highlight: false,
             crisp: true,
+            theme: 0,
+            vertical: false,
             engine,
             route: vec![e1, e3, e4, e5],
             brake_edge,
@@ -214,7 +225,45 @@ impl App {
         );
     }
 
+    pub fn flow_theme(&self) -> FlowTheme {
+        match self.theme {
+            1 => FlowTheme::dark(),
+            2 => FlowTheme::light(),
+            3 => FlowTheme::blueprint(),
+            _ => FlowTheme::default(),
+        }
+    }
+
+    /// Arrange the top-level nodes by their edges, gliding there.
+    pub fn auto_layout(&mut self) {
+        let options = LayoutOptions {
+            direction: if self.vertical {
+                LayoutDirection::TopToBottom
+            } else {
+                LayoutDirection::LeftToRight
+            },
+            ..Default::default()
+        };
+        self.state.auto_layout_animated(&options, 0.7);
+    }
+
     pub fn ui(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("layout_bar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Auto layout").clicked() {
+                    self.auto_layout();
+                }
+                ui.checkbox(&mut self.vertical, "Vertical");
+                ui.separator();
+                ui.label("Theme:");
+                for (i, name) in ["egui", "Dark", "Light", "Blueprint"]
+                    .into_iter()
+                    .enumerate()
+                {
+                    ui.selectable_value(&mut self.theme, i, name);
+                }
+            });
+        });
         egui::TopBottomPanel::top("bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui
@@ -305,6 +354,7 @@ impl App {
                     background: Background::Dots,
                     highlight_connected: self.highlight,
                     crisp_text: self.crisp,
+                    theme: self.flow_theme(),
                     alignment_guides: true,
                     minimap: true,
                     fit_view_on_init: true,
