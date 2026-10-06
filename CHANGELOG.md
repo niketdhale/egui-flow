@@ -6,6 +6,8 @@ All notable changes to egui-flow are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-06
+
 ### Added
 - **Auto-layout**: `FlowState::{layout_positions, auto_layout, auto_layout_animated}` with
   `LayoutOptions` and `LayoutDirection` (`LeftToRight`, `TopToBottom`). A compact layered layout:
@@ -122,4 +124,5 @@ Anyone pinned to a commit from before this release (for example `57f39cb`) shoul
 - `Node`, `Edge`, `FlowOptions` and `PulseStyle` gained fields. They all have defaults, but code
   that builds them with a full struct literal needs the new fields or `..Default::default()`.
 
+[0.2.0]: https://github.com/niketdhale/egui-flow/releases/tag/v0.2.0
 [0.1.0]: https://github.com/niketdhale/egui-flow/releases/tag/v0.1.0

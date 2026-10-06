@@ -2,7 +2,7 @@
 name = "egui-flow"
 description = "A React Flow-style node-graph canvas widget for egui: pan/zoom, draggable nodes, connectable handles, edges, minimap and controls"
 edition = "2024"
-version = "0.1.0"
+version = "0.2.0"
 license = "MIT"
 repository = "https://github.com/niketdhale/egui-flow"
 readme = "README.md"
