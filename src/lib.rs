@@ -34,6 +34,7 @@
 mod crisp;
 mod editor;
 mod events;
+mod exit;
 mod geometry;
 mod groups;
 mod icons;

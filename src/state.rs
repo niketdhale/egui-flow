@@ -174,6 +174,10 @@ pub struct FlowState<N, E> {
     /// True while a frame runs: node positions are then absolute (see `groups.rs`).
     pub(crate) flat: bool,
     pub(crate) layout_anim: Option<crate::layout::LayoutAnim>,
+    /// What each visible node was last painted with, for its exit animation.
+    pub(crate) exit_cache: HashMap<NodeId, Vec<egui::Shape>>,
+    /// Removed nodes fading out.
+    pub(crate) ghosts: Vec<crate::exit::Ghost>,
     pub(crate) interaction: Interaction,
     pub(crate) pulses: Vec<ActivePulse>,
     pub(crate) view_anim: Option<ViewAnim>,
@@ -196,6 +200,8 @@ impl<N, E> Default for FlowState<N, E> {
             initialized: false,
             flat: false,
             layout_anim: None,
+            exit_cache: HashMap::new(),
+            ghosts: Vec::new(),
             interaction: Interaction::default(),
             pulses: Vec::new(),
             view_anim: None,

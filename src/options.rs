@@ -53,6 +53,9 @@ pub struct FlowOptions {
     /// (and clean when zoomed out). Off, text is the 1x raster stretched by the
     /// zoom, which is cheaper but soft above 1x.
     pub crisp_text: bool,
+    /// Nodes that are removed fade out instead of vanishing (with `animate`). Costs a
+    /// copy of every visible node's shapes each frame, so turn it off for very large graphs.
+    pub node_exit_animation: bool,
     /// Canvas colours; the default keeps the ones derived from egui's visuals.
     pub theme: FlowTheme,
     /// Dropping a node on a group puts it in that group; dropping it outside its
@@ -112,6 +115,7 @@ impl Default for FlowOptions {
             nodes_connectable: true,
             handle_visibility: HandleVisibility::Always,
             crisp_text: true,
+            node_exit_animation: true,
             theme: FlowTheme::default(),
             group_drop: true,
             group_header_height: 30.0,

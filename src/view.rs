@@ -171,7 +171,28 @@ impl Flow {
             }
         }
 
-        // --- node fade-in bookkeeping ---------------------------------------
+        // --- node fade-in / fade-out bookkeeping ----------------------------
+        let exit_on = o.animate && o.node_exit_animation;
+        let gone: Vec<NodeId> = state
+            .known_nodes
+            .iter()
+            .filter(|id| !state.nodes.iter().any(|n| n.id == **id))
+            .copied()
+            .collect();
+        for id in gone {
+            if let Some(shapes) = state.exit_cache.remove(&id)
+                && exit_on
+            {
+                state.ghosts.push(crate::exit::Ghost {
+                    shapes,
+                    start: None,
+                });
+            }
+        }
+        if !exit_on {
+            state.exit_cache.clear();
+            state.ghosts.clear();
+        }
         state
             .known_nodes
             .retain(|id| state.nodes.iter().any(|n| n.id == *id));
@@ -752,9 +773,29 @@ impl Flow {
         }
 
         // --- pass 2b: node contents ----------------------------------------
+        // Removed nodes fade out where they were.
+        if !state.ghosts.is_empty() {
+            for mut g in std::mem::take(&mut state.ghosts) {
+                let start = *g.start.get_or_insert(now);
+                let t = ((now - start) / NODE_FADE_SECS) as f32;
+                if t >= 1.0 {
+                    continue;
+                }
+                let opacity = 1.0 - t * t * (3.0 - 2.0 * t);
+                for shape in &g.shapes {
+                    let mut shape = shape.clone();
+                    crate::exit::fade_shape(&mut shape, opacity);
+                    cp.add(shape);
+                }
+                state.ghosts.push(g);
+            }
+            ui.ctx().request_repaint();
+        }
         let mut toggles: Vec<(NodeId, bool)> = Vec::new();
         for i in 0..state.nodes.len() {
             if hidden.contains(&state.nodes[i].id) {
+                // Hidden nodes have no on-screen copy to fade out.
+                state.exit_cache.remove(&state.nodes[i].id);
                 continue;
             }
             let node = &mut state.nodes[i];
@@ -768,6 +809,12 @@ impl Flow {
             let content_w = fixed.map_or(MAX_NODE_WIDTH, |f| f.x.max(MAX_NODE_WIDTH));
             let content = Rect::from_min_size(node.position, vec2(content_w, 10_000.0));
             let margin = frame.total_margin().sum();
+            let shapes_from = exit_on
+                .then(|| {
+                    ui.ctx()
+                        .graphics(|g| g.get(layer_id).map(|l| l.next_idx().0))
+                })
+                .flatten();
             let inner = cui.scope_builder(
                 UiBuilder::new()
                     .id_salt(("flow_node", node.id))
@@ -792,6 +839,19 @@ impl Flow {
             );
             let rect = inner.inner.response.rect;
             node.size = rect.size();
+            if let Some(from) = shapes_from {
+                let painted = ui.ctx().graphics(|g| {
+                    g.get(layer_id).map(|l| {
+                        l.all_entries()
+                            .skip(from)
+                            .map(|c| c.shape.clone())
+                            .collect::<Vec<_>>()
+                    })
+                });
+                if let Some(shapes) = painted {
+                    state.exit_cache.insert(node.id, shapes);
+                }
+            }
             if node.is_group {
                 // Collapse / expand toggle in the header's top-right corner.
                 let toggle = Rect::from_min_size(
@@ -3157,6 +3217,124 @@ mod tests {
         for id in [a, b, c] {
             assert_eq!(s.node(id).unwrap().position, target[&id]);
         }
+    }
+
+    // ---- exit animation ------------------------------------------------------
+
+    fn label_opacity(shapes: &[Shape], text: &str) -> Option<f32> {
+        text_shape(shapes, text).map(|t| t.opacity_factor)
+    }
+
+    /// Two nodes shown for a few frames, then `beta` removed. Returns the opacity of
+    /// beta's label in frames at the given times after the removal.
+    fn opacity_after_removal(opts: FlowOptions, times: &[f64]) -> Vec<Option<f32>> {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        s.add_node(pos2(40.0, 40.0), "alpha");
+        let beta = s.add_node(pos2(300.0, 40.0), "beta");
+        for i in 0..4 {
+            run_full(&ctx, &mut s, vec![], Some(i as f64 * 0.1), opts.clone());
+        }
+        s.remove_node(beta);
+        times
+            .iter()
+            .map(|t| {
+                label_opacity(
+                    &run_full(&ctx, &mut s, vec![], Some(*t), opts.clone()).1,
+                    "beta",
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_removed_node_fades_out_where_it_was_and_then_disappears() {
+        let opts = FlowOptions {
+            minimap: false,
+            controls: false,
+            ..Default::default()
+        };
+        let o = opacity_after_removal(opts, &[1.0, 1.1, 1.2, 1.6]);
+        assert!(
+            o[0].is_some_and(|v| v > 0.99),
+            "starts fully visible: {o:?}"
+        );
+        let (a, b) = (o[1].expect("still drawn"), o[2].expect("still drawn"));
+        assert!(a < 0.95 && a > 0.3, "fading: {a}");
+        assert!(b < a, "and getting fainter: {a} then {b}");
+        assert_eq!(o[3], None, "gone once the fade is over");
+    }
+
+    #[test]
+    fn removal_is_immediate_without_animation_or_with_the_exit_option_off() {
+        let off = FlowOptions {
+            animate: false,
+            minimap: false,
+            controls: false,
+            ..Default::default()
+        };
+        assert_eq!(opacity_after_removal(off, &[1.0, 1.1]), vec![None, None]);
+        let no_exit = FlowOptions {
+            node_exit_animation: false,
+            minimap: false,
+            controls: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            opacity_after_removal(no_exit, &[1.0, 1.1]),
+            vec![None, None]
+        );
+    }
+
+    #[test]
+    fn the_ghost_is_dropped_when_the_fade_ends() {
+        let ctx = Context::default();
+        let mut s = FlowState::new();
+        let a = s.add_node(pos2(40.0, 40.0), "alpha");
+        let opts = FlowOptions::default();
+        for i in 0..3 {
+            run_full(&ctx, &mut s, vec![], Some(i as f64 * 0.1), opts.clone());
+        }
+        s.remove_node(a);
+        run_full(&ctx, &mut s, vec![], Some(1.0), opts.clone());
+        assert_eq!(s.ghosts.len(), 1);
+        run_full(&ctx, &mut s, vec![], Some(2.0), opts.clone());
+        assert!(s.ghosts.is_empty() && s.exit_cache.is_empty());
+    }
+
+    #[test]
+    fn hidden_members_of_a_deleted_collapsed_group_leave_no_ghost() {
+        let Scene {
+            ctx, mut s, group, ..
+        } = group_scene();
+        let opts = FlowOptions {
+            minimap: false,
+            controls: false,
+            ..Default::default()
+        };
+        s.set_collapsed(group, true);
+        for i in 0..4 {
+            run_full(
+                &ctx,
+                &mut s,
+                vec![],
+                Some(10.0 + i as f64 * 0.1),
+                opts.clone(),
+            );
+        }
+        s.clear_selection();
+        s.node_mut(group).unwrap().selected = true;
+        s.delete_selected(); // takes the member with it
+        let shapes = run_full(&ctx, &mut s, vec![], Some(11.0), opts.clone()).1;
+        let later = run_full(&ctx, &mut s, vec![], Some(11.1), opts).1;
+        assert!(
+            label_opacity(&shapes, "group").is_some(),
+            "the group fades out"
+        );
+        assert!(
+            label_opacity(&shapes, "child").is_none() && label_opacity(&later, "child").is_none(),
+            "its hidden member does not reappear"
+        );
     }
 
     #[test]
