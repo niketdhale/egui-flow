@@ -642,6 +642,61 @@ mod tests {
     }
 
     #[test]
+    fn a_handle_accepts_many_edges() {
+        let mut s: FlowState<(), ()> = FlowState::new();
+        let hub = s.add_node(pos2(0.0, 0.0), ());
+        let others: Vec<_> = (0..4)
+            .map(|i| s.add_node(pos2(200.0, 60.0 * i as f32), ()))
+            .collect();
+        for &o in &others {
+            assert!(
+                s.connect(hub, o, ()).is_some(),
+                "fan-out from one source handle"
+            );
+        }
+        for &o in &others {
+            assert!(
+                s.connect(o, hub, ()).is_some(),
+                "fan-in to one target handle"
+            );
+        }
+        assert_eq!(s.edges.len(), 8);
+        assert_eq!(
+            s.edges
+                .iter()
+                .filter(|e| e.source == hub && e.source_handle == Handle::DEFAULT_SOURCE)
+                .count(),
+            4
+        );
+        assert_eq!(
+            s.edges
+                .iter()
+                .filter(|e| e.target == hub && e.target_handle == Handle::DEFAULT_TARGET)
+                .count(),
+            4
+        );
+    }
+
+    #[test]
+    fn distinct_handles_allow_parallel_edges_between_two_nodes() {
+        let (mut s, a, b) = two_nodes();
+        let conn = |sh: u32, th: u32| Connection {
+            source: a,
+            source_handle: HandleId(sh),
+            target: b,
+            target_handle: HandleId(th),
+        };
+        assert!(s.add_edge(conn(1, 0), ()).is_some());
+        assert!(s.add_edge(conn(2, 0), ()).is_some());
+        assert!(s.add_edge(conn(1, 3), ()).is_some());
+        assert!(
+            s.add_edge(conn(1, 0), ()).is_none(),
+            "identical connection is rejected"
+        );
+        assert_eq!(s.edges.len(), 3);
+    }
+
+    #[test]
     fn removing_node_removes_its_edges() {
         let (mut s, a, b) = two_nodes();
         s.connect(a, b, ());
