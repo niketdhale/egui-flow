@@ -6,6 +6,8 @@ All notable changes to egui-flow are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-08
+
 ### Added
 - **Connect anywhere along a side**: `Handle::along()` makes a handle accept wires at any point of
   its side; the landing point is stored in `Edge::{source_offset, target_offset}`, several wires may
@@ -148,5 +150,6 @@ Anyone pinned to a commit from before this release (for example `57f39cb`) shoul
 - `Node`, `Edge`, `FlowOptions` and `PulseStyle` gained fields. They all have defaults, but code
   that builds them with a full struct literal needs the new fields or `..Default::default()`.
 
+[0.3.0]: https://github.com/niketdhale/egui-flow/releases/tag/v0.3.0
 [0.2.0]: https://github.com/niketdhale/egui-flow/releases/tag/v0.2.0
 [0.1.0]: https://github.com/niketdhale/egui-flow/releases/tag/v0.1.0

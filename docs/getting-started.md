@@ -8,7 +8,7 @@ egui-flow is not on crates.io yet; depend on a tagged release:
 
 ```toml
 [dependencies]
-egui-flow = { git = "https://github.com/niketdhale/egui-flow", tag = "v0.2.0" }
+egui-flow = { git = "https://github.com/niketdhale/egui-flow", tag = "v0.3.0" }
 eframe = "0.33"   # or any egui 0.33 host
 ```
 

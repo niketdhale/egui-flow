@@ -139,7 +139,7 @@ egui-flow is not on crates.io yet; depend on a tagged release from GitHub:
 
 ```toml
 [dependencies]
-egui-flow = { git = "https://github.com/niketdhale/egui-flow", tag = "v0.2.0" }
+egui-flow = { git = "https://github.com/niketdhale/egui-flow", tag = "v0.3.0" }
 ```
 
 It targets egui 0.33. Releases follow [Semantic Versioning](https://semver.org/) (below 1.0, a minor release may include breaking changes); see the [changelog](CHANGELOG.md) and the [releases page](https://github.com/niketdhale/egui-flow/releases).
