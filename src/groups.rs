@@ -614,6 +614,24 @@ mod tests {
     }
 
     #[test]
+    fn keep_members_deletes_only_the_group() {
+        use crate::GroupDelete;
+        let (mut s, g, a, b) = grouped();
+        let out = s.add_node(pos2(700.0, 0.0), "out");
+        s.connect(a, out, ());
+        s.connect(g, out, ());
+        let (before_a, before_b) = (s.abs_position(a), s.abs_position(b));
+        s.node_mut(g).unwrap().selected = true;
+        let (nodes, edges) = s.delete_selected_with(GroupDelete::KeepMembers);
+        assert_eq!(nodes.iter().map(|n| n.id).collect::<Vec<_>>(), vec![g]);
+        assert_eq!(edges.len(), 1, "only the group's own wire goes");
+        assert!(s.node(a).is_some() && s.node(b).is_some());
+        assert_eq!(s.node(a).unwrap().parent, None);
+        assert_eq!((s.abs_position(a), s.abs_position(b)), (before_a, before_b));
+        assert_eq!(s.edges.len(), 1, "the member's wire survives");
+    }
+
+    #[test]
     fn copying_a_group_brings_its_members_and_remaps_membership() {
         let (mut s, g, a, b) = grouped();
         s.connect(a, b, ());

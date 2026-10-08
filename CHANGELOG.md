@@ -6,6 +6,24 @@ All notable changes to egui-flow are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Connect anywhere along a side**: `Handle::along()` makes a handle accept wires at any point of
+  its side; the landing point is stored in `Edge::{source_offset, target_offset}`, several wires may
+  share the handle, and reconnecting moves only the dragged end. `Handle::{position_at,
+  side_segment, offset_near}` and `FlowState::add_edge_at`. Made for bus bars.
+- `FlowOptions::avoid_nodes` and `edge_path_around`: `Step` and `SmoothStep` edges route around the
+  nodes in their way (off by default).
+- `FlowViewer::can_join_group`: refuse a drop into a group before it happens, so it emits no event
+  and never reaches an `Editor`.
+- `FlowOptions::group_delete` (`GroupDelete::{DeleteMembers, KeepMembers}`) and
+  `FlowState::delete_selected_with`.
+- `PulseStyle::label_mode` (`PulseLabelMode::{OnHover, Always}`); pulse labels now move out of the
+  way of edge labels and of each other.
+
+### Changed
+- `Edge` has two new fields (`source_offset`, `target_offset`) and `Handle` one (`along`); code that
+  builds them with a struct literal needs them or `..`.
+
 ## [0.2.0] - 2026-10-06
 
 ### Added

@@ -48,12 +48,13 @@ mod viewer;
 
 pub use editor::Editor;
 pub use events::{FlowEvent, FlowResponse};
-pub use geometry::{edge_path, point_at};
+pub use geometry::{edge_path, edge_path_around, point_at};
 pub use icons::{Icon, icon, icon_button};
 pub use layout::{LayoutDirection, LayoutOptions};
-pub use options::{Background, FlowOptions, HandleVisibility};
+pub use options::{Background, FlowOptions, GroupDelete, HandleVisibility};
 pub use state::{
-    Clipboard, FlowState, PulseDirection, PulseEasing, PulseOverflow, PulseShape, PulseStyle,
+    Clipboard, FlowState, PulseDirection, PulseEasing, PulseLabelMode, PulseOverflow, PulseShape,
+    PulseStyle,
 };
 pub use theme::FlowTheme;
 pub use types::*;

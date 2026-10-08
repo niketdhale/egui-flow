@@ -52,7 +52,31 @@ The canvas is drawn into a scaled layer, so text used to be the 1x raster stretc
 
 ![The same node at 3.4x zoom: blocky text with crisp_text off, sharp text with it on](docs/media/crisp-text.png)
 
-### Icons
+### Bus bars: connect anywhere along a side
+
+Mark a handle `.along()` and wires attach wherever they are dropped on that side, not at one fixed spot. The landing point is stored on the edge (`target_offset` / `source_offset`, `0.0..=1.0`), a handle takes any number of wires, and reconnecting a wire moves only the end you drag:
+
+```rust
+fn handles(&self, node: &Node<Part>) -> Vec<Handle> {
+    if node.data.is_bus_bar {
+        vec![Handle::target(Handle::DEFAULT_TARGET, Side::Top).along()]
+    } else {
+        vec![Handle::source(Handle::DEFAULT_SOURCE, Side::Right)]
+    }
+}
+```
+
+Drag a wire to the edge of the bar to attach it; to start one from an `along` handle, drag from just outside that side (the bar itself stays draggable). Create them in code with `FlowState::add_edge_at(conn, source_offset, target_offset, data)`.
+
+## Keeping wires and groups tidy
+
+- `FlowOptions::avoid_nodes = true`: `Step` and `SmoothStep` edges route around the nodes in their way instead of crossing them (`edge_path_around` is the same router as a function).
+- `FlowViewer::can_join_group(node, group)`: return `false` to refuse a drop into a group. Nothing changes and no `ParentChanged` event is emitted, so an `Editor` never records it.
+- `FlowOptions::group_delete = GroupDelete::KeepMembers`: the Delete key removes the group and leaves its members in place (`FlowState::delete_selected_with` does the same from code).
+- `PulseStyle::label_mode = PulseLabelMode::Always` shows a pulse's label while it travels; labels move out of the way of edge labels and each other.
+- Edge style edits (`line_style`, `color`, `width`, arrowheads) are part of an `Editor` snapshot: change them, then call `editor.commit(&state)` to make the change undoable.
+
+## Icons
 Painter-drawn, so they need no font and never render as empty boxes.
 
 ![The built-in icons: check, close, plus, minus, chevrons, triangles and arrows](docs/media/icons.png)
@@ -71,6 +95,9 @@ Painter-drawn, so they need no font and never render as empty boxes.
 | Handles | `FlowViewer::handles` — any number per node, on any side, source or target |
 | Connecting | drag handle → handle, snapping, live validation (`can_connect`), `Esc` cancels |
 | Many connections | a handle takes any number of wires; only exact duplicates are rejected |
+| Connect anywhere | `Handle::target(id, Side::Top).along()`: a wire attaches where it is dropped along that side, and remembers it in `edge.target_offset` / `source_offset` (see Bus bars below) |
+| Route around nodes | `FlowOptions::avoid_nodes`: `Step` / `SmoothStep` edges detour around nodes in their way |
+| Group rules | `FlowViewer::can_join_group` refuses drops; `FlowOptions::group_delete` keeps or deletes members with a deleted group |
 | Hiding handles | `FlowOptions::handle_visibility`: `Always`, `OnHover` (fade in near the node, when selected or while connecting) or `Hidden` |
 | Edge types | `Bezier`, `Straight`, `Step`, `SmoothStep`; labels, arrowheads, per-edge `color` / `width` |
 | Arrowheads | `edge.arrow = true` with `edge.arrow_style = ArrowStyle::{Triangle, Open, Circle, Diamond}`; `edge.arrow_at_source = true` for two-way links |

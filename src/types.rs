@@ -68,6 +68,10 @@ pub struct Handle {
     pub side: Side,
     /// Position along `side`, `0.0..=1.0` (default `0.5`, centred).
     pub offset: f32,
+    /// Accept wires anywhere along `side`, not just at `offset`. Each wire remembers where it
+    /// landed ([`Edge::source_offset`] / [`Edge::target_offset`]). Made for bus bars.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub along: bool,
 }
 
 impl Handle {
@@ -82,6 +86,7 @@ impl Handle {
             kind: HandleKind::Source,
             side,
             offset: 0.5,
+            along: false,
         }
     }
 
@@ -91,6 +96,7 @@ impl Handle {
             kind: HandleKind::Target,
             side,
             offset: 0.5,
+            along: false,
         }
     }
 
@@ -99,15 +105,55 @@ impl Handle {
         self
     }
 
+    /// Accept wires anywhere along this side. See [`Handle::along`](Self#structfield.along).
+    pub fn along(mut self) -> Self {
+        self.along = true;
+        self
+    }
+
     /// Where this handle sits for a node occupying `rect`.
     pub fn position(&self, rect: Rect) -> Pos2 {
-        let o = self.offset;
+        self.position_at(rect, None)
+    }
+
+    /// Like [`position`](Self::position), but a wire's own `offset` wins on an `along` handle.
+    pub fn position_at(&self, rect: Rect, offset: Option<f32>) -> Pos2 {
+        let o = offset
+            .filter(|_| self.along)
+            .map_or(self.offset, |o| o.clamp(0.0, 1.0));
         match self.side {
             Side::Left => pos2(rect.min.x, rect.min.y + rect.height() * o),
             Side::Right => pos2(rect.max.x, rect.min.y + rect.height() * o),
             Side::Top => pos2(rect.min.x + rect.width() * o, rect.min.y),
             Side::Bottom => pos2(rect.min.x + rect.width() * o, rect.max.y),
         }
+    }
+}
+
+impl Handle {
+    /// The two ends of this handle's side of `rect`.
+    pub fn side_segment(&self, rect: Rect) -> [Pos2; 2] {
+        let (a, b) = (
+            Handle {
+                offset: 0.0,
+                ..*self
+            },
+            Handle {
+                offset: 1.0,
+                ..*self
+            },
+        );
+        [a.position(rect), b.position(rect)]
+    }
+
+    /// The `offset` (`0.0..=1.0`) of the point on this handle's side nearest to `p`.
+    pub fn offset_near(&self, rect: Rect, p: Pos2) -> f32 {
+        let [a, b] = self.side_segment(rect);
+        let ab = b - a;
+        if ab.length_sq() == 0.0 {
+            return 0.5;
+        }
+        ((p - a).dot(ab) / ab.length_sq()).clamp(0.0, 1.0)
     }
 }
 
@@ -299,6 +345,10 @@ pub struct Edge<D> {
     pub source_handle: HandleId,
     pub target: NodeId,
     pub target_handle: HandleId,
+    /// Where along an [`along`](Handle::along) source handle this wire leaves (`0.0..=1.0`).
+    pub source_offset: Option<f32>,
+    /// Where along an [`along`](Handle::along) target handle this wire arrives.
+    pub target_offset: Option<f32>,
     pub data: D,
     /// Overrides the canvas default routing.
     pub kind: Option<EdgeKind>,
@@ -406,5 +456,35 @@ mod line_style_tests {
             .pattern(1.0),
             Some((0.5, 3.0))
         );
+    }
+}
+
+#[cfg(test)]
+mod along_tests {
+    use super::*;
+
+    #[test]
+    fn along_handles_follow_the_wires_offset_and_plain_ones_ignore_it() {
+        let rect = Rect::from_min_size(pos2(100.0, 50.0), vec2(200.0, 20.0));
+        let plain = Handle::target(HandleId(0), Side::Top);
+        let along = plain.along();
+        assert_eq!(plain.position_at(rect, Some(0.1)), plain.position(rect));
+        assert_eq!(along.position_at(rect, Some(0.25)), pos2(150.0, 50.0));
+        assert_eq!(along.position_at(rect, None), pos2(200.0, 50.0));
+        assert_eq!(
+            along.position_at(rect, Some(9.0)),
+            pos2(300.0, 50.0),
+            "clamped"
+        );
+    }
+
+    #[test]
+    fn offset_near_projects_onto_the_side() {
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(200.0, 20.0));
+        let top = Handle::target(HandleId(0), Side::Top).along();
+        assert_eq!(top.offset_near(rect, pos2(50.0, -30.0)), 0.25);
+        assert_eq!(top.offset_near(rect, pos2(-80.0, 5.0)), 0.0);
+        let right = Handle::source(HandleId(1), Side::Right).along();
+        assert_eq!(right.offset_near(rect, pos2(260.0, 15.0)), 0.75);
     }
 }

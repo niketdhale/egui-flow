@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use egui::{Color32, Pos2, Rect, Vec2, vec2};
 
+use crate::options::GroupDelete;
 use crate::types::*;
 
 /// Transient pointer interaction, kept between frames.
@@ -13,6 +14,8 @@ pub(crate) struct ConnectDrag {
     /// Set when an existing edge's end is being dragged to a new handle; the
     /// `node`/`handle` are then the edge's fixed end.
     pub reconnecting: Option<EdgeId>,
+    /// Where along an `along` handle the fixed end sits.
+    pub offset: Option<f32>,
 }
 
 #[derive(Default)]
@@ -88,6 +91,16 @@ pub enum PulseOverflow {
     ReplaceOldest,
 }
 
+/// When a pulse's [`label`](PulseStyle::label) is shown.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PulseLabelMode {
+    /// Only while the pointer is over the pulse.
+    #[default]
+    OnHover,
+    /// Whenever the pulse is travelling.
+    Always,
+}
+
 /// Nodes and the edges between them, copied out of a [`FlowState`] by
 /// [`copy_selected`](FlowState::copy_selected).
 #[derive(Clone, Debug)]
@@ -112,6 +125,9 @@ pub struct PulseStyle {
     pub delay: f32,
     /// Shown next to the pulse while the pointer hovers it.
     pub label: Option<String>,
+    /// Whether `label` shows on hover only or all the time. Either way it moves out of the way
+    /// of edge labels and other pulse labels.
+    pub label_mode: PulseLabelMode,
     /// Head shape.
     pub shape: PulseShape,
     /// Speed profile.
@@ -131,6 +147,7 @@ impl Default for PulseStyle {
             direction: PulseDirection::Forward,
             delay: 0.0,
             label: None,
+            label_mode: PulseLabelMode::OnHover,
             shape: PulseShape::Circle,
             easing: PulseEasing::EaseInOut,
             trail: 3,
@@ -256,10 +273,27 @@ impl<N, E> FlowState<N, E> {
     /// missing or an identical edge already exists. This does *not* check
     /// handle kinds; interactive connections are validated by the canvas.
     pub fn add_edge(&mut self, conn: Connection, data: E) -> Option<EdgeId> {
+        self.add_edge_at(conn, None, None, data)
+    }
+
+    /// [`add_edge`](Self::add_edge) for [`along`](Handle::along) handles: the wire leaves at
+    /// `source_offset` and arrives at `target_offset`. Two wires may share a connection when
+    /// they land at different points.
+    pub fn add_edge_at(
+        &mut self,
+        conn: Connection,
+        source_offset: Option<f32>,
+        target_offset: Option<f32>,
+        data: E,
+    ) -> Option<EdgeId> {
         if self.node(conn.source).is_none() || self.node(conn.target).is_none() {
             return None;
         }
-        if self.edges.iter().any(|e| e.connection() == conn) {
+        if self.edges.iter().any(|e| {
+            e.connection() == conn
+                && e.source_offset == source_offset
+                && e.target_offset == target_offset
+        }) {
             return None;
         }
         let id = EdgeId(self.next_edge);
@@ -270,6 +304,8 @@ impl<N, E> FlowState<N, E> {
             source_handle: conn.source_handle,
             target: conn.target,
             target_handle: conn.target_handle,
+            source_offset,
+            target_offset,
             data,
             kind: None,
             label: None,
@@ -353,14 +389,24 @@ impl<N, E> FlowState<N, E> {
     /// Remove every selected, deletable node and edge (plus edges orphaned by
     /// node removal). Returns what was removed.
     pub fn delete_selected(&mut self) -> (Vec<Node<N>>, Vec<Edge<E>>) {
+        self.delete_selected_with(GroupDelete::DeleteMembers)
+    }
+
+    /// Like [`delete_selected`](Self::delete_selected), choosing what happens to the members
+    /// of a deleted group.
+    pub fn delete_selected_with(&mut self, groups: GroupDelete) -> (Vec<Node<N>>, Vec<Edge<E>>) {
         let mut node_ids: Vec<NodeId> = self
             .nodes
             .iter()
             .filter(|n| n.selected && n.deletable)
             .map(|n| n.id)
             .collect();
-        // Deleting a group deletes what is inside it (ungroup it first to keep the members).
-        for id in node_ids.clone() {
+        // Deleting a group deletes what is inside it, unless asked to keep the members.
+        for id in node_ids
+            .clone()
+            .into_iter()
+            .filter(|_| groups == GroupDelete::DeleteMembers)
+        {
             for d in self.descendants(id) {
                 if self.node(d).is_some_and(|n| n.deletable) && !node_ids.contains(&d) {
                     node_ids.push(d);

@@ -56,6 +56,18 @@ fn bezier(s: Pos2, ss: Side, t: Pos2, ts: Side) -> Vec<Pos2> {
 }
 
 fn orthogonal(s: Pos2, ss: Side, t: Pos2, ts: Side, radius: f32) -> Vec<Pos2> {
+    finish(step_points(s, ss, t, ts), radius)
+}
+
+fn finish(pts: Vec<Pos2>, radius: f32) -> Vec<Pos2> {
+    if radius > 0.0 {
+        round_corners(&pts, radius)
+    } else {
+        pts
+    }
+}
+
+fn step_points(s: Pos2, ss: Side, t: Pos2, ts: Side) -> Vec<Pos2> {
     let p1 = s + ss.dir() * STEP_STUB;
     let p2 = t + ts.dir() * STEP_STUB;
     let mut pts = vec![s, p1];
@@ -73,11 +85,164 @@ fn orthogonal(s: Pos2, ss: Side, t: Pos2, ts: Side, radius: f32) -> Vec<Pos2> {
     }
     pts.extend([p2, t]);
     pts.dedup_by(|a, b| (*a - *b).length_sq() < 1e-6);
-    if radius > 0.0 {
-        round_corners(&pts, radius)
-    } else {
-        pts
+    pts
+}
+
+/// Clear space kept around a node by [`edge_path_around`].
+const AVOID_MARGIN: f32 = 14.0;
+/// Extra cost of a bend, in flow units of detour it is worth.
+const BEND_COST: f32 = 40.0;
+/// Only nodes this close to the edge's bounding box are considered.
+const AVOID_WINDOW: f32 = 200.0;
+
+/// Like [`edge_path`], but `Step` and `SmoothStep` edges detour around `obstacles` (node
+/// rectangles) when the plain route would cross one. Other kinds, and edges that cross
+/// nothing, are routed as usual; if no clear route exists the plain one is kept.
+pub fn edge_path_around(
+    kind: EdgeKind,
+    s: Pos2,
+    ss: Side,
+    t: Pos2,
+    ts: Side,
+    obstacles: &[Rect],
+) -> Vec<Pos2> {
+    let radius = match kind {
+        EdgeKind::Step => 0.0,
+        EdgeKind::SmoothStep => CORNER_RADIUS,
+        _ => return edge_path(kind, s, ss, t, ts),
+    };
+    let plain = step_points(s, ss, t, ts);
+    let window = Rect::from_two_pos(s, t).expand(AVOID_WINDOW);
+    let boxes: Vec<Rect> = obstacles
+        .iter()
+        .filter(|r| r.intersects(window))
+        .map(|r| r.expand(AVOID_MARGIN))
+        .collect();
+    let crosses = plain
+        .windows(2)
+        .any(|w| boxes.iter().any(|b| segment_blocked(w[0], w[1], b)));
+    if !crosses {
+        return finish(plain, radius);
     }
+    let (p1, p2) = (s + ss.dir() * STEP_STUB, t + ts.dir() * STEP_STUB);
+    match grid_route(p1, ss, p2, &boxes) {
+        Some(mid) => {
+            let mut pts = vec![s];
+            pts.extend(mid);
+            pts.push(t);
+            pts.dedup_by(|a, b| (*a - *b).length_sq() < 1e-6);
+            finish(pts, radius)
+        }
+        None => finish(plain, radius),
+    }
+}
+
+/// Whether the axis-aligned segment `a`–`b` passes through the inside of `r`.
+fn segment_blocked(a: Pos2, b: Pos2, r: &Rect) -> bool {
+    let (lo, hi) = (a.min(b), a.max(b));
+    lo.x < r.max.x && hi.x > r.min.x && lo.y < r.max.y && hi.y > r.min.y
+}
+
+/// Cheapest orthogonal route from `p1` (leaving along `dir`) to `p2` that stays out of
+/// `boxes`: Dijkstra over the grid of lines through the boxes' edges, penalising bends.
+// ponytail: rebuilt every frame for edges that cross a node; cache by endpoints if graphs
+// with hundreds of such edges make it slow.
+fn grid_route(p1: Pos2, dir: Side, p2: Pos2, boxes: &[Rect]) -> Option<Vec<Pos2>> {
+    fn axis(mut v: Vec<f32>) -> Vec<f32> {
+        v.sort_by(f32::total_cmp);
+        v.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
+        v
+    }
+    let xs = axis(
+        boxes
+            .iter()
+            .flat_map(|b| [b.min.x, b.max.x])
+            .chain([p1.x, p2.x])
+            .collect(),
+    );
+    let ys = axis(
+        boxes
+            .iter()
+            .flat_map(|b| [b.min.y, b.max.y])
+            .chain([p1.y, p2.y])
+            .collect(),
+    );
+    let nearest = |v: &[f32], x: f32| {
+        (0..v.len())
+            .min_by(|&i, &j| (v[i] - x).abs().total_cmp(&(v[j] - x).abs()))
+            .unwrap_or(0)
+    };
+    let (si, sj) = (nearest(&xs, p1.x), nearest(&ys, p1.y));
+    let (gi, gj) = (nearest(&xs, p2.x), nearest(&ys, p2.y));
+    const DIRS: [(i32, i32); 4] = [(1, 0), (0, 1), (-1, 0), (0, -1)]; // right, down, left, up
+    let d0 = match dir {
+        Side::Right => 0,
+        Side::Bottom => 1,
+        Side::Left => 2,
+        Side::Top => 3,
+    };
+    let (nx, ny) = (xs.len(), ys.len());
+    let idx = |i: usize, j: usize, d: usize| (j * nx + i) * 4 + d;
+    let mut cost = vec![u32::MAX; nx * ny * 4];
+    let mut prev = vec![usize::MAX; nx * ny * 4];
+    let mut heap = std::collections::BinaryHeap::new();
+    cost[idx(si, sj, d0)] = 0;
+    heap.push(std::cmp::Reverse((0u32, si, sj, d0)));
+    let mut goal = None;
+    while let Some(std::cmp::Reverse((c, i, j, d))) = heap.pop() {
+        if c > cost[idx(i, j, d)] {
+            continue;
+        }
+        if (i, j) == (gi, gj) {
+            goal = Some((i, j, d));
+            break;
+        }
+        for (nd, (dx, dy)) in DIRS.iter().enumerate() {
+            if nd == (d + 2) % 4 {
+                continue; // no U-turns
+            }
+            let (ni, nj) = (i as i32 + dx, j as i32 + dy);
+            if ni < 0 || nj < 0 || ni >= nx as i32 || nj >= ny as i32 {
+                continue;
+            }
+            let (ni, nj) = (ni as usize, nj as usize);
+            let (a, b) = (pos2(xs[i], ys[j]), pos2(xs[ni], ys[nj]));
+            if boxes.iter().any(|r| segment_blocked(a, b, r)) {
+                continue;
+            }
+            let step = ((b - a).length() * 4.0) as u32
+                + if nd == d { 0 } else { (BEND_COST * 4.0) as u32 };
+            let nc = c + step;
+            let k = idx(ni, nj, nd);
+            if nc < cost[k] {
+                cost[k] = nc;
+                prev[k] = idx(i, j, d);
+                heap.push(std::cmp::Reverse((nc, ni, nj, nd)));
+            }
+        }
+    }
+    let (i, j, d) = goal?;
+    let mut cells = vec![(i, j)];
+    let mut k = idx(i, j, d);
+    while prev[k] != usize::MAX {
+        k = prev[k];
+        let (cell, _) = (k / 4, k % 4);
+        cells.push((cell % nx, cell / nx));
+    }
+    cells.reverse();
+    let mut pts: Vec<Pos2> = cells.iter().map(|&(i, j)| pos2(xs[i], ys[j])).collect();
+    pts[0] = p1;
+    *pts.last_mut()? = p2;
+    // Keep only the corners.
+    let mut out = vec![pts[0]];
+    for w in pts.windows(3) {
+        let (a, b, c) = (w[0], w[1], w[2]);
+        if (b - a).normalized() != (c - b).normalized() {
+            out.push(b);
+        }
+    }
+    out.push(*pts.last()?);
+    Some(out)
 }
 
 /// Replace each interior vertex by a quadratic arc.
@@ -311,5 +476,90 @@ mod guide_tests {
         let (off, guides) = align_to(group, &[], 6.0);
         assert_eq!(off, Vec2::ZERO);
         assert!(guides.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::*;
+
+    fn hits(path: &[Pos2], r: Rect) -> bool {
+        path.windows(2).any(|w| segment_blocked(w[0], w[1], &r))
+    }
+
+    fn orthogonal_path(path: &[Pos2]) -> bool {
+        path.windows(2)
+            .all(|w| (w[0].x - w[1].x).abs() < 1e-3 || (w[0].y - w[1].y).abs() < 1e-3)
+    }
+
+    const S: Pos2 = pos2(0.0, 100.0);
+    const T: Pos2 = pos2(400.0, 100.0);
+
+    #[test]
+    fn a_step_edge_goes_round_a_node_in_its_way() {
+        // A bus bar straddling the straight run between the two ends.
+        let bar = Rect::from_min_size(pos2(150.0, 60.0), vec2(100.0, 80.0));
+        let plain = edge_path(EdgeKind::Step, S, Side::Right, T, Side::Left);
+        assert!(hits(&plain, bar), "the plain route really crosses it");
+        for kind in [EdgeKind::Step, EdgeKind::SmoothStep] {
+            let p = edge_path_around(kind, S, Side::Right, T, Side::Left, &[bar]);
+            assert!(!hits(&p, bar), "{kind:?} avoids the node: {p:?}");
+            assert_eq!(p.first().copied(), Some(S));
+            assert_eq!(p.last().copied(), Some(T));
+        }
+        let p = edge_path_around(EdgeKind::Step, S, Side::Right, T, Side::Left, &[bar]);
+        assert!(orthogonal_path(&p), "{p:?}");
+    }
+
+    #[test]
+    fn the_detour_keeps_a_margin_and_is_the_shorter_way_round() {
+        let bar = Rect::from_min_size(pos2(150.0, 90.0), vec2(100.0, 30.0));
+        let p = edge_path_around(EdgeKind::Step, S, Side::Right, T, Side::Left, &[bar]);
+        assert!(!hits(&p, bar.expand(AVOID_MARGIN - 1.0)), "{p:?}");
+        // Going over the top (y = 76) is shorter than under (y = 134).
+        assert!(p.iter().any(|q| q.y < bar.min.y), "{p:?}");
+    }
+
+    #[test]
+    fn edges_that_cross_nothing_are_left_alone() {
+        let far = Rect::from_min_size(pos2(150.0, 300.0), vec2(100.0, 30.0));
+        for kind in [EdgeKind::Step, EdgeKind::SmoothStep] {
+            assert_eq!(
+                edge_path_around(kind, S, Side::Right, T, Side::Left, &[far]),
+                edge_path(kind, S, Side::Right, T, Side::Left)
+            );
+        }
+        assert_eq!(
+            edge_path_around(EdgeKind::Step, S, Side::Right, T, Side::Left, &[]),
+            edge_path(EdgeKind::Step, S, Side::Right, T, Side::Left)
+        );
+    }
+
+    #[test]
+    fn bezier_and_straight_edges_ignore_obstacles() {
+        let bar = Rect::from_min_size(pos2(150.0, 60.0), vec2(100.0, 80.0));
+        for kind in [EdgeKind::Bezier, EdgeKind::Straight] {
+            assert_eq!(
+                edge_path_around(kind, S, Side::Right, T, Side::Left, &[bar]),
+                edge_path(kind, S, Side::Right, T, Side::Left)
+            );
+        }
+    }
+
+    #[test]
+    fn it_goes_round_a_wall_of_nodes_and_gives_up_politely_when_boxed_in() {
+        // Two tall nodes side by side: the route must climb over both.
+        let wall = [
+            Rect::from_min_size(pos2(120.0, 20.0), vec2(60.0, 160.0)),
+            Rect::from_min_size(pos2(220.0, 20.0), vec2(60.0, 160.0)),
+        ];
+        let p = edge_path_around(EdgeKind::Step, S, Side::Right, T, Side::Left, &wall);
+        assert!(wall.iter().all(|w| !hits(&p, *w)), "{p:?}");
+        assert!(orthogonal_path(&p));
+
+        // The target's own approach is walled in: nothing clear exists, so keep the plain route.
+        let cell = Rect::from_center_size(T, vec2(200.0, 200.0));
+        let p = edge_path_around(EdgeKind::Step, S, Side::Right, T, Side::Left, &[cell]);
+        assert_eq!(p, edge_path(EdgeKind::Step, S, Side::Right, T, Side::Left));
     }
 }

@@ -27,6 +27,16 @@ pub enum HandleVisibility {
     Hidden,
 }
 
+/// What deleting a group does to its members.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GroupDelete {
+    /// The members go with the group.
+    #[default]
+    DeleteMembers,
+    /// Only the group goes; its members stay where they are, one level up.
+    KeepMembers,
+}
+
 /// Behaviour switches for [`Flow`](crate::Flow). Every field has a sensible
 /// default, so override with struct-update syntax:
 /// `FlowOptions { minimap: true, ..Default::default() }`.
@@ -45,6 +55,10 @@ pub struct FlowOptions {
     pub minimap: bool,
     pub controls: bool,
     pub default_edge_kind: EdgeKind,
+    /// `Step` and `SmoothStep` edges detour around nodes that the plain route would cross
+    /// (see [`edge_path_around`](crate::edge_path_around)). Costs a search for each edge that
+    /// crosses a node.
+    pub avoid_nodes: bool,
     pub nodes_draggable: bool,
     pub nodes_connectable: bool,
     /// When to draw the connection dots on nodes.
@@ -67,6 +81,8 @@ pub struct FlowOptions {
     pub elements_selectable: bool,
     /// Delete/Backspace removes the selection.
     pub delete_key: bool,
+    /// What the Delete key does to the members of a selected group.
+    pub group_delete: GroupDelete,
     pub allow_self_loops: bool,
     /// Frame all nodes on the first frame.
     pub fit_view_on_init: bool,
@@ -111,6 +127,7 @@ impl Default for FlowOptions {
             minimap: false,
             controls: true,
             default_edge_kind: EdgeKind::Bezier,
+            avoid_nodes: false,
             nodes_draggable: true,
             nodes_connectable: true,
             handle_visibility: HandleVisibility::Always,
@@ -121,6 +138,7 @@ impl Default for FlowOptions {
             group_header_height: 30.0,
             elements_selectable: true,
             delete_key: true,
+            group_delete: GroupDelete::DeleteMembers,
             allow_self_loops: false,
             fit_view_on_init: false,
             fit_view_padding: 50.0,

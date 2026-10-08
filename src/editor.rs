@@ -231,6 +231,34 @@ mod tests {
     }
 
     #[test]
+    fn wire_style_edits_are_undoable_after_a_commit() {
+        use crate::{ArrowStyle, LineStyle};
+        let mut s = state();
+        let b = s.add_node(pos2(100.0, 0.0), "b");
+        let a = s.nodes[0].id;
+        let e = s.connect(a, b, ()).unwrap();
+        s.edge_mut(e).unwrap().target_offset = Some(0.3);
+        let mut ed = Editor::new(&s);
+
+        let edge = s.edge_mut(e).unwrap();
+        edge.line_style = LineStyle::Dashed;
+        edge.color = Some(egui::Color32::RED);
+        edge.width = Some(4.0);
+        edge.arrow = true;
+        edge.arrow_style = ArrowStyle::Diamond;
+        ed.commit(&s);
+
+        assert!(ed.undo(&mut s));
+        let edge = s.edge(e).unwrap();
+        assert_eq!(edge.line_style, LineStyle::Solid);
+        assert_eq!((edge.color, edge.width, edge.arrow), (None, None, false));
+        assert_eq!(edge.target_offset, Some(0.3), "landing points ride along");
+        assert!(ed.redo(&mut s));
+        assert_eq!(s.edge(e).unwrap().line_style, LineStyle::Dashed);
+        assert_eq!(s.edge(e).unwrap().arrow_style, ArrowStyle::Diamond);
+    }
+
+    #[test]
     fn undo_and_redo_leave_the_current_selection_alone() {
         let mut s = state();
         let a = s.nodes[0].id;
