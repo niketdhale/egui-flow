@@ -54,6 +54,8 @@ The canvas is drawn into a scaled layer, so text used to be the 1x raster stretc
 
 ### Bus bars: connect anywhere along a side
 
+![A bus bar with three wires arriving along its top side and three leaving along its bottom, each at its own point](docs/media/bus-bar.png)
+
 Mark a handle `.along()` and wires attach wherever they are dropped on that side, not at one fixed spot. The landing point is stored on the edge (`target_offset` / `source_offset`, `0.0..=1.0`), a handle takes any number of wires, and reconnecting a wire moves only the end you drag:
 
 ```rust
@@ -71,9 +73,15 @@ Drag a wire to the edge of the bar to attach it; to start one from an `along` ha
 ## Keeping wires and groups tidy
 
 - `FlowOptions::avoid_nodes = true`: `Step` and `SmoothStep` edges route around the nodes in their way instead of crossing them (`edge_path_around` is the same router as a function).
+
+  ![The same SmoothStep edge with avoid_nodes off, running through a node, and on, going round it](docs/media/avoid-nodes.png)
+
 - `FlowViewer::can_join_group(node, group)`: return `false` to refuse a drop into a group. Nothing changes and no `ParentChanged` event is emitted, so an `Editor` never records it.
 - `FlowOptions::group_delete = GroupDelete::KeepMembers`: the Delete key removes the group and leaves its members in place (`FlowState::delete_selected_with` does the same from code).
 - `PulseStyle::label_mode = PulseLabelMode::Always` shows a pulse's label while it travels; labels move out of the way of edge labels and each other.
+
+  ![A pulse label sitting above a large edge label instead of covering it](docs/media/pulse-labels.png)
+
 - Edge style edits (`line_style`, `color`, `width`, arrowheads) are part of an `Editor` snapshot: change them, then call `editor.commit(&state)` to make the change undoable.
 
 ## Icons
@@ -114,7 +122,7 @@ Painter-drawn, so they need no font and never render as empty boxes.
 | Reconnect edges | select an edge, drag the ring on either end to another handle; the edge snaps back if dropped on nothing; `FlowEvent::Reconnected { edge, old, new }`; `FlowOptions::edges_reconnectable` |
 | Highlight connected | `FlowOptions::highlight_connected` / `Flow::highlight_connected(true)` dims everything not connected to the selected or hovered node |
 | Route pulses | `state.pulse_route(start_node, &[edge, edge, ..], style)` animates a multi-hop route leg by leg, picking forward/reverse per edge |
-| Pulse direction, delay, label | `PulseStyle { direction: PulseDirection::Reverse, delay, label, .. }` or `pulse_edge_reverse`; delays let you sequence the legs of a route; the label shows on hover; `shape` (`Circle`/`Square`/`Diamond`/`Arrow`), `easing`, `trail` and `tag`; `FlowEvent::PulseArrived { edge, tag, direction }` fires when a leg ends |
+| Pulse direction, delay, label | `PulseStyle { direction: PulseDirection::Reverse, delay, label, .. }` or `pulse_edge_reverse`; delays let you sequence the legs of a route; the label shows on hover, or all the time with `label_mode: PulseLabelMode::Always`, and keeps clear of edge labels; `shape` (`Circle`/`Square`/`Diamond`/`Arrow`), `easing`, `trail` and `tag`; `FlowEvent::PulseArrived { edge, tag, direction }` fires when a leg ends |
 | Pulse limits | `state.max_pulses_per_edge` (default 8) and `state.pulse_overflow` (`Drop` or `ReplaceOldest`) |
 | `fitView({ duration })`, zoom easing | `state.fit_view_animated(secs)`, `state.animate_viewport(vp, secs)`; zoom/fit buttons ease; user input cancels |
 | Node enter transition | nodes added after the first frame fade in |
