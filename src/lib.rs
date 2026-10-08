@@ -22,8 +22,10 @@
 //! * crisp text at high zoom, node exit animation, pulse labels ([`PulseLabelMode`])
 //! * events for everything the application needs to mirror
 //!
-//! The [README](https://github.com/niketdhale/egui-flow#readme) has a guide to each feature,
-//! and `cargo run --example gateway` shows most of them together.
+//! New here? Read the
+//! [getting-started guide](https://github.com/niketdhale/egui-flow/blob/main/docs/getting-started.md).
+//! The [README](https://github.com/niketdhale/egui-flow#readme) covers each feature, and
+//! `cargo run --example gateway` shows most of them together.
 //!
 //! ```no_run
 //! use egui_flow::{Flow, FlowState, FlowViewer, Node};
@@ -40,6 +42,8 @@
 //!     for event in out.events { /* react */ }
 //! }
 //! ```
+
+#![warn(missing_docs)]
 
 mod crisp;
 mod editor;

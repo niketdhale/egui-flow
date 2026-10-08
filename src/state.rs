@@ -55,8 +55,11 @@ pub enum PulseDirection {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PulseShape {
     #[default]
+    /// A filled circle.
     Circle,
+    /// A filled square.
     Square,
+    /// A filled diamond.
     Diamond,
     /// A triangle pointing along the direction of travel.
     Arrow,
@@ -65,6 +68,7 @@ pub enum PulseShape {
 /// Speed profile of a pulse along its edge.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PulseEasing {
+    /// Constant speed.
     Linear,
     /// Slow start and end (smoothstep).
     #[default]
@@ -105,7 +109,9 @@ pub enum PulseLabelMode {
 /// [`copy_selected`](FlowState::copy_selected).
 #[derive(Clone, Debug)]
 pub struct Clipboard<N, E> {
+    /// The copied nodes.
     pub nodes: Vec<Node<N>>,
+    /// The edges between them.
     pub edges: Vec<Edge<E>>,
 }
 
@@ -176,8 +182,11 @@ const DEFAULT_MAX_PULSES_PER_EDGE: usize = 8;
 /// Nodes, edges, viewport and selection. Mutate freely between frames; pass
 /// to [`Flow::show`](crate::Flow::show) every frame.
 pub struct FlowState<N, E> {
+    /// The nodes. Positions are relative to the parent group when a node has one.
     pub nodes: Vec<Node<N>>,
+    /// The edges.
     pub edges: Vec<Edge<E>>,
+    /// Pan and zoom.
     pub viewport: Viewport,
     /// Most pulses (including delayed ones) allowed in flight on one edge, so a
     /// burst of traffic cannot grow the queue without bound.
@@ -230,6 +239,7 @@ impl<N, E> Default for FlowState<N, E> {
 }
 
 impl<N, E> FlowState<N, E> {
+    /// An empty graph.
     pub fn new() -> Self {
         Self::default()
     }
@@ -253,18 +263,22 @@ impl<N, E> FlowState<N, E> {
         true
     }
 
+    /// The node with this id.
     pub fn node(&self, id: NodeId) -> Option<&Node<N>> {
         self.nodes.iter().find(|n| n.id == id)
     }
 
+    /// The node with this id, mutably.
     pub fn node_mut(&mut self, id: NodeId) -> Option<&mut Node<N>> {
         self.nodes.iter_mut().find(|n| n.id == id)
     }
 
+    /// The edge with this id.
     pub fn edge(&self, id: EdgeId) -> Option<&Edge<E>> {
         self.edges.iter().find(|e| e.id == id)
     }
 
+    /// The edge with this id, mutably.
     pub fn edge_mut(&mut self, id: EdgeId) -> Option<&mut Edge<E>> {
         self.edges.iter_mut().find(|e| e.id == id)
     }
@@ -355,11 +369,13 @@ impl<N, E> FlowState<N, E> {
         Some((node, gone))
     }
 
+    /// Remove an edge, returning it.
     pub fn remove_edge(&mut self, id: EdgeId) -> Option<Edge<E>> {
         let idx = self.edges.iter().position(|e| e.id == id)?;
         Some(self.edges.remove(idx))
     }
 
+    /// Ids of the selected nodes.
     pub fn selected_nodes(&self) -> Vec<NodeId> {
         self.nodes
             .iter()
@@ -368,6 +384,7 @@ impl<N, E> FlowState<N, E> {
             .collect()
     }
 
+    /// Ids of the selected edges.
     pub fn selected_edges(&self) -> Vec<EdgeId> {
         self.edges
             .iter()
@@ -376,11 +393,13 @@ impl<N, E> FlowState<N, E> {
             .collect()
     }
 
+    /// Deselect every node and edge.
     pub fn clear_selection(&mut self) {
         self.nodes.iter_mut().for_each(|n| n.selected = false);
         self.edges.iter_mut().for_each(|e| e.selected = false);
     }
 
+    /// Select every node.
     pub fn select_all(&mut self) {
         self.nodes.iter_mut().for_each(|n| n.selected = true);
         self.edges.iter_mut().for_each(|e| e.selected = true);

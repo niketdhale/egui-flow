@@ -40,6 +40,7 @@ pub struct Flow {
 type Handles = HashMap<NodeId, Vec<Handle>>;
 
 impl Flow {
+    /// A canvas identified by `id_salt`, which must be unique per canvas in the window.
     pub fn new(id_salt: impl Hash) -> Self {
         Self {
             id: Id::new(id_salt),
@@ -47,26 +48,31 @@ impl Flow {
         }
     }
 
+    /// Replace all options at once.
     pub fn options(mut self, opts: FlowOptions) -> Self {
         self.opts = opts;
         self
     }
 
+    /// Set the background pattern.
     pub fn background(mut self, background: Background) -> Self {
         self.opts.background = background;
         self
     }
 
+    /// Show or hide the minimap.
     pub fn minimap(mut self, on: bool) -> Self {
         self.opts.minimap = on;
         self
     }
 
+    /// Show or hide the zoom buttons.
     pub fn controls(mut self, on: bool) -> Self {
         self.opts.controls = on;
         self
     }
 
+    /// Snap dragged nodes to a grid of this size.
     pub fn snap_to_grid(mut self, grid: f32) -> Self {
         self.opts.snap_to_grid = Some(grid);
         self
@@ -90,6 +96,7 @@ impl Flow {
         self
     }
 
+    /// Routing for edges that do not set their own `kind`.
     pub fn edge_kind(mut self, kind: EdgeKind) -> Self {
         self.opts.default_edge_kind = kind;
         self

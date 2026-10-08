@@ -29,9 +29,13 @@ id_type!(
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Side {
+    /// The left side.
     Left,
+    /// The right side.
     Right,
+    /// The top side.
     Top,
+    /// The bottom side.
     Bottom,
 }
 
@@ -46,6 +50,7 @@ impl Side {
         }
     }
 
+    /// Whether this is `Left` or `Right`.
     pub fn is_horizontal(self) -> bool {
         matches!(self, Side::Left | Side::Right)
     }
@@ -55,7 +60,9 @@ impl Side {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum HandleKind {
+    /// Wires leave from a source.
     Source,
+    /// Wires arrive at a target.
     Target,
 }
 
@@ -63,8 +70,11 @@ pub enum HandleKind {
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Handle {
+    /// Identifies the handle within its node.
     pub id: HandleId,
+    /// Source or target.
     pub kind: HandleKind,
+    /// Which side of the node it is on.
     pub side: Side,
     /// Position along `side`, `0.0..=1.0` (default `0.5`, centred).
     pub offset: f32,
@@ -80,6 +90,7 @@ impl Handle {
     /// Id of the default source handle (right side).
     pub const DEFAULT_SOURCE: HandleId = HandleId(1);
 
+    /// A source handle on `side`, centred.
     pub fn source(id: HandleId, side: Side) -> Self {
         Self {
             id,
@@ -90,6 +101,7 @@ impl Handle {
         }
     }
 
+    /// A target handle on `side`, centred.
     pub fn target(id: HandleId, side: Side) -> Self {
         Self {
             id,
@@ -100,6 +112,7 @@ impl Handle {
         }
     }
 
+    /// Place the handle `offset` (`0.0..=1.0`) along its side.
     pub fn with_offset(mut self, offset: f32) -> Self {
         self.offset = offset.clamp(0.0, 1.0);
         self
@@ -209,7 +222,12 @@ pub enum LineStyle {
     /// Dots, sized to the line width.
     Dotted,
     /// Custom dash and gap lengths in flow units.
-    Custom { dash: f32, gap: f32 },
+    Custom {
+        /// Dash length.
+        dash: f32,
+        /// Gap length.
+        gap: f32,
+    },
 }
 
 impl LineStyle {
@@ -245,6 +263,7 @@ pub enum EdgeKind {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Node<D> {
+    /// Identifies the node.
     pub id: NodeId,
     /// Top-left corner in flow coordinates.
     pub position: Pos2,
@@ -277,14 +296,20 @@ pub struct Node<D> {
     /// For groups: hide the members and show just the group's header. Edges to hidden
     /// members attach to the group instead.
     pub collapsed: bool,
+    /// Your data, shown by [`FlowViewer::node_ui`](crate::FlowViewer::node_ui).
     pub data: D,
+    /// Currently selected.
     pub selected: bool,
+    /// Can be dragged (needs `FlowOptions::nodes_draggable`).
     pub draggable: bool,
+    /// Can take part in connections.
     pub connectable: bool,
+    /// Can be removed with the Delete key.
     pub deletable: bool,
 }
 
 impl<D> Node<D> {
+    /// A node at `position` carrying `data`, with default behaviour.
     pub fn new(id: NodeId, position: Pos2, data: D) -> Self {
         Self {
             id,
@@ -331,6 +356,7 @@ impl<D> Node<D> {
         self
     }
 
+    /// The node's rectangle in flow coordinates (relative to its group, if it has one).
     pub fn rect(&self) -> Rect {
         Rect::from_min_size(self.position, self.size)
     }
@@ -340,18 +366,25 @@ impl<D> Node<D> {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Edge<D> {
+    /// Identifies the edge.
     pub id: EdgeId,
+    /// The node the wire leaves.
     pub source: NodeId,
+    /// The handle it leaves from.
     pub source_handle: HandleId,
+    /// The node the wire arrives at.
     pub target: NodeId,
+    /// The handle it arrives at.
     pub target_handle: HandleId,
     /// Where along an [`along`](Handle::along) source handle this wire leaves (`0.0..=1.0`).
     pub source_offset: Option<f32>,
     /// Where along an [`along`](Handle::along) target handle this wire arrives.
     pub target_offset: Option<f32>,
+    /// Your data.
     pub data: D,
     /// Overrides the canvas default routing.
     pub kind: Option<EdgeKind>,
+    /// Text drawn on the edge; see `label_style`.
     pub label: Option<String>,
     /// Stroke pattern (solid, dashed, dotted, custom).
     pub line_style: LineStyle,
@@ -372,11 +405,14 @@ pub struct Edge<D> {
     /// Speed of the marching dashes of an `animated` edge, in flow units per
     /// second. Negative values run from target to source.
     pub animation_speed: f32,
+    /// Currently selected.
     pub selected: bool,
+    /// Can be removed with the Delete key.
     pub deletable: bool,
 }
 
 impl<D> Edge<D> {
+    /// This edge's endpoints.
     pub fn connection(&self) -> Connection {
         Connection {
             source: self.source,
@@ -391,9 +427,13 @@ impl<D> Edge<D> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Connection {
+    /// The node the wire leaves.
     pub source: NodeId,
+    /// The handle it leaves from.
     pub source_handle: HandleId,
+    /// The node the wire arrives at.
     pub target: NodeId,
+    /// The handle it arrives at.
     pub target_handle: HandleId,
 }
 
@@ -402,7 +442,9 @@ pub struct Connection {
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Viewport {
+    /// Where the flow origin is on screen, in pixels.
     pub pan: Vec2,
+    /// Scale, `1.0` is actual size.
     pub zoom: f32,
 }
 

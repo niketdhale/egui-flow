@@ -14,6 +14,7 @@ A [React Flow](https://reactflow.dev/)-style node-graph canvas for [egui](https:
 cargo run --example basic   # node graph canvas
 cargo run --example gateway # the CAN-gateway demo from the tour below
 cargo run --example icons   # built-in icon gallery
+cargo run --example busbar  # bus bars, routing around nodes, group rules
 ```
 
 ## Feature tour
@@ -144,6 +145,8 @@ egui-flow = { git = "https://github.com/niketdhale/egui-flow", tag = "v0.2.0" }
 It targets egui 0.33. Releases follow [Semantic Versioning](https://semver.org/) (below 1.0, a minor release may include breaking changes); see the [changelog](CHANGELOG.md) and the [releases page](https://github.com/niketdhale/egui-flow/releases).
 
 ## Usage
+
+New to egui-flow? Start with the [getting-started guide](docs/getting-started.md).
 
 ```rust
 use egui_flow::{Flow, FlowEvent, FlowState, FlowViewer, Node};

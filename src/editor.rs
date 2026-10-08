@@ -80,6 +80,7 @@ pub struct Editor<N, E> {
 }
 
 impl<N: Clone, E: Clone> Editor<N, E> {
+    /// An editor whose history starts at the current contents of `state`.
     pub fn new(state: &FlowState<N, E>) -> Self {
         Self {
             undo: Vec::new(),
@@ -102,10 +103,12 @@ impl<N: Clone, E: Clone> Editor<N, E> {
         self.redo.clear();
     }
 
+    /// Whether there is a step to [`undo`](Self::undo).
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
 
+    /// Whether there is a step to [`redo`](Self::redo).
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }

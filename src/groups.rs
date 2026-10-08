@@ -121,6 +121,7 @@ impl<N, E> FlowState<N, E> {
             .collect()
     }
 
+    /// Whether `id` is inside a collapsed group, and so not drawn.
     pub fn is_hidden(&self, id: NodeId) -> bool {
         let index = self.index();
         ancestors_in(&index, id)

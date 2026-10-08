@@ -20,6 +20,12 @@ All notable changes to egui-flow are documented here. The format follows
 - `PulseStyle::label_mode` (`PulseLabelMode::{OnHover, Always}`); pulse labels now move out of the
   way of edge labels and of each other.
 
+### Documentation
+- Every public item is documented and `#![warn(missing_docs)]` keeps it that way.
+- `docs/getting-started.md`, a guide from an empty window to an editable graph; its code is
+  compiled by `tests/guide.rs`.
+- New `busbar` example: bus bars, routing around nodes and group rules.
+
 ### Changed
 - `Edge` has two new fields (`source_offset`, `target_offset`) and `Handle` one (`along`); code that
   builds them with a struct literal needs them or `..`.

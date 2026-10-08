@@ -10,19 +10,29 @@ use egui::{Color32, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, Vec2, pos2, 
 /// A built-in icon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Icon {
+    /// A tick.
     Check,
+    /// A cross.
     Close,
+    /// A plus sign.
     Plus,
+    /// A minus sign.
     Minus,
+    /// A chevron pointing up.
     ChevronUp,
+    /// A chevron pointing down.
     ChevronDown,
+    /// A chevron pointing left.
     ChevronLeft,
+    /// A chevron pointing right.
     ChevronRight,
     /// Solid triangle pointing right (collapsed disclosure).
     TriangleRight,
     /// Solid triangle pointing down (expanded disclosure).
     TriangleDown,
+    /// An arrow pointing right.
     ArrowRight,
+    /// An arrow pointing left.
     ArrowLeft,
 }
 
