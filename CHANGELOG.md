@@ -6,6 +6,32 @@ All notable changes to egui-flow are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-08
+
+### Added
+- **Connect anywhere along a side**: `Handle::along()` makes a handle accept wires at any point of
+  its side; the landing point is stored in `Edge::{source_offset, target_offset}`, several wires may
+  share the handle, and reconnecting moves only the dragged end. `Handle::{position_at,
+  side_segment, offset_near}` and `FlowState::add_edge_at`. Made for bus bars.
+- `FlowOptions::avoid_nodes` and `edge_path_around`: `Step` and `SmoothStep` edges route around the
+  nodes in their way (off by default).
+- `FlowViewer::can_join_group`: refuse a drop into a group before it happens, so it emits no event
+  and never reaches an `Editor`.
+- `FlowOptions::group_delete` (`GroupDelete::{DeleteMembers, KeepMembers}`) and
+  `FlowState::delete_selected_with`.
+- `PulseStyle::label_mode` (`PulseLabelMode::{OnHover, Always}`); pulse labels now move out of the
+  way of edge labels and of each other.
+
+### Documentation
+- Every public item is documented and `#![warn(missing_docs)]` keeps it that way.
+- `docs/getting-started.md`, a guide from an empty window to an editable graph; its code is
+  compiled by `tests/guide.rs`.
+- New `busbar` example: bus bars, routing around nodes and group rules.
+
+### Changed
+- `Edge` has two new fields (`source_offset`, `target_offset`) and `Handle` one (`along`); code that
+  builds them with a struct literal needs them or `..`.
+
 ## [0.2.0] - 2026-10-06
 
 ### Added
@@ -124,5 +150,6 @@ Anyone pinned to a commit from before this release (for example `57f39cb`) shoul
 - `Node`, `Edge`, `FlowOptions` and `PulseStyle` gained fields. They all have defaults, but code
   that builds them with a full struct literal needs the new fields or `..Default::default()`.
 
+[0.3.0]: https://github.com/niketdhale/egui-flow/releases/tag/v0.3.0
 [0.2.0]: https://github.com/niketdhale/egui-flow/releases/tag/v0.2.0
 [0.1.0]: https://github.com/niketdhale/egui-flow/releases/tag/v0.1.0

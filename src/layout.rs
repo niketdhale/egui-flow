@@ -33,6 +33,7 @@ pub enum LayoutDirection {
 /// How [`FlowState::auto_layout`] arranges nodes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LayoutOptions {
+    /// Which way layers run.
     pub direction: LayoutDirection,
     /// Space between one layer and the next.
     pub layer_gap: f32,

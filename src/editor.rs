@@ -80,6 +80,7 @@ pub struct Editor<N, E> {
 }
 
 impl<N: Clone, E: Clone> Editor<N, E> {
+    /// An editor whose history starts at the current contents of `state`.
     pub fn new(state: &FlowState<N, E>) -> Self {
         Self {
             undo: Vec::new(),
@@ -102,10 +103,12 @@ impl<N: Clone, E: Clone> Editor<N, E> {
         self.redo.clear();
     }
 
+    /// Whether there is a step to [`undo`](Self::undo).
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
 
+    /// Whether there is a step to [`redo`](Self::redo).
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }
@@ -228,6 +231,34 @@ mod tests {
         assert!(ed.redo(&mut s));
         assert_eq!(s.nodes.len(), 3);
         assert!(!ed.redo(&mut s));
+    }
+
+    #[test]
+    fn wire_style_edits_are_undoable_after_a_commit() {
+        use crate::{ArrowStyle, LineStyle};
+        let mut s = state();
+        let b = s.add_node(pos2(100.0, 0.0), "b");
+        let a = s.nodes[0].id;
+        let e = s.connect(a, b, ()).unwrap();
+        s.edge_mut(e).unwrap().target_offset = Some(0.3);
+        let mut ed = Editor::new(&s);
+
+        let edge = s.edge_mut(e).unwrap();
+        edge.line_style = LineStyle::Dashed;
+        edge.color = Some(egui::Color32::RED);
+        edge.width = Some(4.0);
+        edge.arrow = true;
+        edge.arrow_style = ArrowStyle::Diamond;
+        ed.commit(&s);
+
+        assert!(ed.undo(&mut s));
+        let edge = s.edge(e).unwrap();
+        assert_eq!(edge.line_style, LineStyle::Solid);
+        assert_eq!((edge.color, edge.width, edge.arrow), (None, None, false));
+        assert_eq!(edge.target_offset, Some(0.3), "landing points ride along");
+        assert!(ed.redo(&mut s));
+        assert_eq!(s.edge(e).unwrap().line_style, LineStyle::Dashed);
+        assert_eq!(s.edge(e).unwrap().arrow_style, ArrowStyle::Diamond);
     }
 
     #[test]

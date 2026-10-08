@@ -38,6 +38,13 @@ pub trait FlowViewer<N, E> {
         true
     }
 
+    /// Whether `node` may be dropped into `group`. Refused drops change nothing and emit no
+    /// [`FlowEvent::ParentChanged`](crate::FlowEvent::ParentChanged), so they never reach an
+    /// [`Editor`](crate::Editor). Moving a node out of its group is always allowed.
+    fn can_join_group(&self, _node: &Node<N>, _group: &Node<N>) -> bool {
+        true
+    }
+
     /// Colour for this node in the minimap.
     fn minimap_color(&self, _node: &Node<N>) -> Option<Color32> {
         None

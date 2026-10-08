@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use egui::{Color32, Pos2, Rect, Vec2, vec2};
 
+use crate::options::GroupDelete;
 use crate::types::*;
 
 /// Transient pointer interaction, kept between frames.
@@ -13,6 +14,8 @@ pub(crate) struct ConnectDrag {
     /// Set when an existing edge's end is being dragged to a new handle; the
     /// `node`/`handle` are then the edge's fixed end.
     pub reconnecting: Option<EdgeId>,
+    /// Where along an `along` handle the fixed end sits.
+    pub offset: Option<f32>,
 }
 
 #[derive(Default)]
@@ -52,8 +55,11 @@ pub enum PulseDirection {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PulseShape {
     #[default]
+    /// A filled circle.
     Circle,
+    /// A filled square.
     Square,
+    /// A filled diamond.
     Diamond,
     /// A triangle pointing along the direction of travel.
     Arrow,
@@ -62,6 +68,7 @@ pub enum PulseShape {
 /// Speed profile of a pulse along its edge.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PulseEasing {
+    /// Constant speed.
     Linear,
     /// Slow start and end (smoothstep).
     #[default]
@@ -88,11 +95,23 @@ pub enum PulseOverflow {
     ReplaceOldest,
 }
 
+/// When a pulse's [`label`](PulseStyle::label) is shown.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PulseLabelMode {
+    /// Only while the pointer is over the pulse.
+    #[default]
+    OnHover,
+    /// Whenever the pulse is travelling.
+    Always,
+}
+
 /// Nodes and the edges between them, copied out of a [`FlowState`] by
 /// [`copy_selected`](FlowState::copy_selected).
 #[derive(Clone, Debug)]
 pub struct Clipboard<N, E> {
+    /// The copied nodes.
     pub nodes: Vec<Node<N>>,
+    /// The edges between them.
     pub edges: Vec<Edge<E>>,
 }
 
@@ -112,6 +131,9 @@ pub struct PulseStyle {
     pub delay: f32,
     /// Shown next to the pulse while the pointer hovers it.
     pub label: Option<String>,
+    /// Whether `label` shows on hover only or all the time. Either way it moves out of the way
+    /// of edge labels and other pulse labels.
+    pub label_mode: PulseLabelMode,
     /// Head shape.
     pub shape: PulseShape,
     /// Speed profile.
@@ -131,6 +153,7 @@ impl Default for PulseStyle {
             direction: PulseDirection::Forward,
             delay: 0.0,
             label: None,
+            label_mode: PulseLabelMode::OnHover,
             shape: PulseShape::Circle,
             easing: PulseEasing::EaseInOut,
             trail: 3,
@@ -159,8 +182,11 @@ const DEFAULT_MAX_PULSES_PER_EDGE: usize = 8;
 /// Nodes, edges, viewport and selection. Mutate freely between frames; pass
 /// to [`Flow::show`](crate::Flow::show) every frame.
 pub struct FlowState<N, E> {
+    /// The nodes. Positions are relative to the parent group when a node has one.
     pub nodes: Vec<Node<N>>,
+    /// The edges.
     pub edges: Vec<Edge<E>>,
+    /// Pan and zoom.
     pub viewport: Viewport,
     /// Most pulses (including delayed ones) allowed in flight on one edge, so a
     /// burst of traffic cannot grow the queue without bound.
@@ -213,6 +239,7 @@ impl<N, E> Default for FlowState<N, E> {
 }
 
 impl<N, E> FlowState<N, E> {
+    /// An empty graph.
     pub fn new() -> Self {
         Self::default()
     }
@@ -236,18 +263,22 @@ impl<N, E> FlowState<N, E> {
         true
     }
 
+    /// The node with this id.
     pub fn node(&self, id: NodeId) -> Option<&Node<N>> {
         self.nodes.iter().find(|n| n.id == id)
     }
 
+    /// The node with this id, mutably.
     pub fn node_mut(&mut self, id: NodeId) -> Option<&mut Node<N>> {
         self.nodes.iter_mut().find(|n| n.id == id)
     }
 
+    /// The edge with this id.
     pub fn edge(&self, id: EdgeId) -> Option<&Edge<E>> {
         self.edges.iter().find(|e| e.id == id)
     }
 
+    /// The edge with this id, mutably.
     pub fn edge_mut(&mut self, id: EdgeId) -> Option<&mut Edge<E>> {
         self.edges.iter_mut().find(|e| e.id == id)
     }
@@ -256,10 +287,27 @@ impl<N, E> FlowState<N, E> {
     /// missing or an identical edge already exists. This does *not* check
     /// handle kinds; interactive connections are validated by the canvas.
     pub fn add_edge(&mut self, conn: Connection, data: E) -> Option<EdgeId> {
+        self.add_edge_at(conn, None, None, data)
+    }
+
+    /// [`add_edge`](Self::add_edge) for [`along`](Handle::along) handles: the wire leaves at
+    /// `source_offset` and arrives at `target_offset`. Two wires may share a connection when
+    /// they land at different points.
+    pub fn add_edge_at(
+        &mut self,
+        conn: Connection,
+        source_offset: Option<f32>,
+        target_offset: Option<f32>,
+        data: E,
+    ) -> Option<EdgeId> {
         if self.node(conn.source).is_none() || self.node(conn.target).is_none() {
             return None;
         }
-        if self.edges.iter().any(|e| e.connection() == conn) {
+        if self.edges.iter().any(|e| {
+            e.connection() == conn
+                && e.source_offset == source_offset
+                && e.target_offset == target_offset
+        }) {
             return None;
         }
         let id = EdgeId(self.next_edge);
@@ -270,6 +318,8 @@ impl<N, E> FlowState<N, E> {
             source_handle: conn.source_handle,
             target: conn.target,
             target_handle: conn.target_handle,
+            source_offset,
+            target_offset,
             data,
             kind: None,
             label: None,
@@ -319,11 +369,13 @@ impl<N, E> FlowState<N, E> {
         Some((node, gone))
     }
 
+    /// Remove an edge, returning it.
     pub fn remove_edge(&mut self, id: EdgeId) -> Option<Edge<E>> {
         let idx = self.edges.iter().position(|e| e.id == id)?;
         Some(self.edges.remove(idx))
     }
 
+    /// Ids of the selected nodes.
     pub fn selected_nodes(&self) -> Vec<NodeId> {
         self.nodes
             .iter()
@@ -332,6 +384,7 @@ impl<N, E> FlowState<N, E> {
             .collect()
     }
 
+    /// Ids of the selected edges.
     pub fn selected_edges(&self) -> Vec<EdgeId> {
         self.edges
             .iter()
@@ -340,11 +393,13 @@ impl<N, E> FlowState<N, E> {
             .collect()
     }
 
+    /// Deselect every node and edge.
     pub fn clear_selection(&mut self) {
         self.nodes.iter_mut().for_each(|n| n.selected = false);
         self.edges.iter_mut().for_each(|e| e.selected = false);
     }
 
+    /// Select every node.
     pub fn select_all(&mut self) {
         self.nodes.iter_mut().for_each(|n| n.selected = true);
         self.edges.iter_mut().for_each(|e| e.selected = true);
@@ -353,14 +408,24 @@ impl<N, E> FlowState<N, E> {
     /// Remove every selected, deletable node and edge (plus edges orphaned by
     /// node removal). Returns what was removed.
     pub fn delete_selected(&mut self) -> (Vec<Node<N>>, Vec<Edge<E>>) {
+        self.delete_selected_with(GroupDelete::DeleteMembers)
+    }
+
+    /// Like [`delete_selected`](Self::delete_selected), choosing what happens to the members
+    /// of a deleted group.
+    pub fn delete_selected_with(&mut self, groups: GroupDelete) -> (Vec<Node<N>>, Vec<Edge<E>>) {
         let mut node_ids: Vec<NodeId> = self
             .nodes
             .iter()
             .filter(|n| n.selected && n.deletable)
             .map(|n| n.id)
             .collect();
-        // Deleting a group deletes what is inside it (ungroup it first to keep the members).
-        for id in node_ids.clone() {
+        // Deleting a group deletes what is inside it, unless asked to keep the members.
+        for id in node_ids
+            .clone()
+            .into_iter()
+            .filter(|_| groups == GroupDelete::DeleteMembers)
+        {
             for d in self.descendants(id) {
                 if self.node(d).is_some_and(|n| n.deletable) && !node_ids.contains(&d) {
                     node_ids.push(d);

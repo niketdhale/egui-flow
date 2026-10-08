@@ -29,9 +29,13 @@ id_type!(
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Side {
+    /// The left side.
     Left,
+    /// The right side.
     Right,
+    /// The top side.
     Top,
+    /// The bottom side.
     Bottom,
 }
 
@@ -46,6 +50,7 @@ impl Side {
         }
     }
 
+    /// Whether this is `Left` or `Right`.
     pub fn is_horizontal(self) -> bool {
         matches!(self, Side::Left | Side::Right)
     }
@@ -55,7 +60,9 @@ impl Side {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum HandleKind {
+    /// Wires leave from a source.
     Source,
+    /// Wires arrive at a target.
     Target,
 }
 
@@ -63,11 +70,18 @@ pub enum HandleKind {
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Handle {
+    /// Identifies the handle within its node.
     pub id: HandleId,
+    /// Source or target.
     pub kind: HandleKind,
+    /// Which side of the node it is on.
     pub side: Side,
     /// Position along `side`, `0.0..=1.0` (default `0.5`, centred).
     pub offset: f32,
+    /// Accept wires anywhere along `side`, not just at `offset`. Each wire remembers where it
+    /// landed ([`Edge::source_offset`] / [`Edge::target_offset`]). Made for bus bars.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub along: bool,
 }
 
 impl Handle {
@@ -76,38 +90,83 @@ impl Handle {
     /// Id of the default source handle (right side).
     pub const DEFAULT_SOURCE: HandleId = HandleId(1);
 
+    /// A source handle on `side`, centred.
     pub fn source(id: HandleId, side: Side) -> Self {
         Self {
             id,
             kind: HandleKind::Source,
             side,
             offset: 0.5,
+            along: false,
         }
     }
 
+    /// A target handle on `side`, centred.
     pub fn target(id: HandleId, side: Side) -> Self {
         Self {
             id,
             kind: HandleKind::Target,
             side,
             offset: 0.5,
+            along: false,
         }
     }
 
+    /// Place the handle `offset` (`0.0..=1.0`) along its side.
     pub fn with_offset(mut self, offset: f32) -> Self {
         self.offset = offset.clamp(0.0, 1.0);
         self
     }
 
+    /// Accept wires anywhere along this side. See [`Handle::along`](Self#structfield.along).
+    pub fn along(mut self) -> Self {
+        self.along = true;
+        self
+    }
+
     /// Where this handle sits for a node occupying `rect`.
     pub fn position(&self, rect: Rect) -> Pos2 {
-        let o = self.offset;
+        self.position_at(rect, None)
+    }
+
+    /// Like [`position`](Self::position), but a wire's own `offset` wins on an `along` handle.
+    pub fn position_at(&self, rect: Rect, offset: Option<f32>) -> Pos2 {
+        let o = offset
+            .filter(|_| self.along)
+            .map_or(self.offset, |o| o.clamp(0.0, 1.0));
         match self.side {
             Side::Left => pos2(rect.min.x, rect.min.y + rect.height() * o),
             Side::Right => pos2(rect.max.x, rect.min.y + rect.height() * o),
             Side::Top => pos2(rect.min.x + rect.width() * o, rect.min.y),
             Side::Bottom => pos2(rect.min.x + rect.width() * o, rect.max.y),
         }
+    }
+}
+
+impl Handle {
+    /// The two ends of this handle's side of `rect`.
+    pub fn side_segment(&self, rect: Rect) -> [Pos2; 2] {
+        let (a, b) = (
+            Handle {
+                offset: 0.0,
+                ..*self
+            },
+            Handle {
+                offset: 1.0,
+                ..*self
+            },
+        );
+        [a.position(rect), b.position(rect)]
+    }
+
+    /// The `offset` (`0.0..=1.0`) of the point on this handle's side nearest to `p`.
+    pub fn offset_near(&self, rect: Rect, p: Pos2) -> f32 {
+        let [a, b] = self.side_segment(rect);
+        let ab = b - a;
+        if ab.length_sq() == 0.0 {
+            return 0.5;
+        }
+        ((p - a).dot(ab) / ab.length_sq()).clamp(0.0, 1.0)
     }
 }
 
@@ -163,7 +222,12 @@ pub enum LineStyle {
     /// Dots, sized to the line width.
     Dotted,
     /// Custom dash and gap lengths in flow units.
-    Custom { dash: f32, gap: f32 },
+    Custom {
+        /// Dash length.
+        dash: f32,
+        /// Gap length.
+        gap: f32,
+    },
 }
 
 impl LineStyle {
@@ -199,6 +263,7 @@ pub enum EdgeKind {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Node<D> {
+    /// Identifies the node.
     pub id: NodeId,
     /// Top-left corner in flow coordinates.
     pub position: Pos2,
@@ -231,14 +296,20 @@ pub struct Node<D> {
     /// For groups: hide the members and show just the group's header. Edges to hidden
     /// members attach to the group instead.
     pub collapsed: bool,
+    /// Your data, shown by [`FlowViewer::node_ui`](crate::FlowViewer::node_ui).
     pub data: D,
+    /// Currently selected.
     pub selected: bool,
+    /// Can be dragged (needs `FlowOptions::nodes_draggable`).
     pub draggable: bool,
+    /// Can take part in connections.
     pub connectable: bool,
+    /// Can be removed with the Delete key.
     pub deletable: bool,
 }
 
 impl<D> Node<D> {
+    /// A node at `position` carrying `data`, with default behaviour.
     pub fn new(id: NodeId, position: Pos2, data: D) -> Self {
         Self {
             id,
@@ -285,6 +356,7 @@ impl<D> Node<D> {
         self
     }
 
+    /// The node's rectangle in flow coordinates (relative to its group, if it has one).
     pub fn rect(&self) -> Rect {
         Rect::from_min_size(self.position, self.size)
     }
@@ -294,14 +366,25 @@ impl<D> Node<D> {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Edge<D> {
+    /// Identifies the edge.
     pub id: EdgeId,
+    /// The node the wire leaves.
     pub source: NodeId,
+    /// The handle it leaves from.
     pub source_handle: HandleId,
+    /// The node the wire arrives at.
     pub target: NodeId,
+    /// The handle it arrives at.
     pub target_handle: HandleId,
+    /// Where along an [`along`](Handle::along) source handle this wire leaves (`0.0..=1.0`).
+    pub source_offset: Option<f32>,
+    /// Where along an [`along`](Handle::along) target handle this wire arrives.
+    pub target_offset: Option<f32>,
+    /// Your data.
     pub data: D,
     /// Overrides the canvas default routing.
     pub kind: Option<EdgeKind>,
+    /// Text drawn on the edge; see `label_style`.
     pub label: Option<String>,
     /// Stroke pattern (solid, dashed, dotted, custom).
     pub line_style: LineStyle,
@@ -322,11 +405,14 @@ pub struct Edge<D> {
     /// Speed of the marching dashes of an `animated` edge, in flow units per
     /// second. Negative values run from target to source.
     pub animation_speed: f32,
+    /// Currently selected.
     pub selected: bool,
+    /// Can be removed with the Delete key.
     pub deletable: bool,
 }
 
 impl<D> Edge<D> {
+    /// This edge's endpoints.
     pub fn connection(&self) -> Connection {
         Connection {
             source: self.source,
@@ -341,9 +427,13 @@ impl<D> Edge<D> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Connection {
+    /// The node the wire leaves.
     pub source: NodeId,
+    /// The handle it leaves from.
     pub source_handle: HandleId,
+    /// The node the wire arrives at.
     pub target: NodeId,
+    /// The handle it arrives at.
     pub target_handle: HandleId,
 }
 
@@ -352,7 +442,9 @@ pub struct Connection {
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Viewport {
+    /// Where the flow origin is on screen, in pixels.
     pub pan: Vec2,
+    /// Scale, `1.0` is actual size.
     pub zoom: f32,
 }
 
@@ -406,5 +498,35 @@ mod line_style_tests {
             .pattern(1.0),
             Some((0.5, 3.0))
         );
+    }
+}
+
+#[cfg(test)]
+mod along_tests {
+    use super::*;
+
+    #[test]
+    fn along_handles_follow_the_wires_offset_and_plain_ones_ignore_it() {
+        let rect = Rect::from_min_size(pos2(100.0, 50.0), vec2(200.0, 20.0));
+        let plain = Handle::target(HandleId(0), Side::Top);
+        let along = plain.along();
+        assert_eq!(plain.position_at(rect, Some(0.1)), plain.position(rect));
+        assert_eq!(along.position_at(rect, Some(0.25)), pos2(150.0, 50.0));
+        assert_eq!(along.position_at(rect, None), pos2(200.0, 50.0));
+        assert_eq!(
+            along.position_at(rect, Some(9.0)),
+            pos2(300.0, 50.0),
+            "clamped"
+        );
+    }
+
+    #[test]
+    fn offset_near_projects_onto_the_side() {
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(200.0, 20.0));
+        let top = Handle::target(HandleId(0), Side::Top).along();
+        assert_eq!(top.offset_near(rect, pos2(50.0, -30.0)), 0.25);
+        assert_eq!(top.offset_near(rect, pos2(-80.0, 5.0)), 0.0);
+        let right = Handle::source(HandleId(1), Side::Right).along();
+        assert_eq!(right.offset_near(rect, pos2(260.0, 15.0)), 0.75);
     }
 }

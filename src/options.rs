@@ -6,10 +6,14 @@ use crate::types::EdgeKind;
 /// Pattern drawn behind the graph.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Background {
+    /// No background.
     None,
     #[default]
+    /// A grid of dots.
     Dots,
+    /// A grid of lines.
     Lines,
+    /// A grid of crosses.
     Cross,
 }
 
@@ -27,25 +31,47 @@ pub enum HandleVisibility {
     Hidden,
 }
 
+/// What deleting a group does to its members.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GroupDelete {
+    /// The members go with the group.
+    #[default]
+    DeleteMembers,
+    /// Only the group goes; its members stay where they are, one level up.
+    KeepMembers,
+}
+
 /// Behaviour switches for [`Flow`](crate::Flow). Every field has a sensible
 /// default, so override with struct-update syntax:
 /// `FlowOptions { minimap: true, ..Default::default() }`.
 #[derive(Clone, Debug)]
 pub struct FlowOptions {
+    /// Pattern drawn behind the graph.
     pub background: Background,
     /// Background pattern spacing in flow units.
     pub background_gap: f32,
     /// Snap dragged nodes to a grid of this size (flow units).
     pub snap_to_grid: Option<f32>,
+    /// Smallest zoom allowed.
     pub min_zoom: f32,
+    /// Largest zoom allowed.
     pub max_zoom: f32,
     /// Mouse wheel zooms (like React Flow). When false the wheel pans and
     /// only ctrl+wheel / pinch zooms.
     pub zoom_on_scroll: bool,
+    /// Show the minimap.
     pub minimap: bool,
+    /// Show the zoom buttons.
     pub controls: bool,
+    /// Routing for edges that do not set their own `kind`.
     pub default_edge_kind: EdgeKind,
+    /// `Step` and `SmoothStep` edges detour around nodes that the plain route would cross
+    /// (see [`edge_path_around`](crate::edge_path_around)). Costs a search for each edge that
+    /// crosses a node.
+    pub avoid_nodes: bool,
+    /// Nodes can be dragged.
     pub nodes_draggable: bool,
+    /// Handles can start and receive connections.
     pub nodes_connectable: bool,
     /// When to draw the connection dots on nodes.
     pub handle_visibility: HandleVisibility,
@@ -64,12 +90,17 @@ pub struct FlowOptions {
     /// Height of a group's header strip. Only the header (and the collapsed group) is
     /// grabbable, so empty space inside a group still pans and box-selects.
     pub group_header_height: f32,
+    /// Nodes and edges can be selected by clicking and box-selecting.
     pub elements_selectable: bool,
     /// Delete/Backspace removes the selection.
     pub delete_key: bool,
+    /// What the Delete key does to the members of a selected group.
+    pub group_delete: GroupDelete,
+    /// Allow an edge from a node to itself.
     pub allow_self_loops: bool,
     /// Frame all nodes on the first frame.
     pub fit_view_on_init: bool,
+    /// Margin around the graph for fit-view, in screen pixels.
     pub fit_view_padding: f32,
     /// Master switch for UI animation: eased view transitions, node fade-in
     /// and hover easing. Turn off for reduced-motion users. Edges you marked
@@ -111,6 +142,7 @@ impl Default for FlowOptions {
             minimap: false,
             controls: true,
             default_edge_kind: EdgeKind::Bezier,
+            avoid_nodes: false,
             nodes_draggable: true,
             nodes_connectable: true,
             handle_visibility: HandleVisibility::Always,
@@ -121,6 +153,7 @@ impl Default for FlowOptions {
             group_header_height: 30.0,
             elements_selectable: true,
             delete_key: true,
+            group_delete: GroupDelete::DeleteMembers,
             allow_self_loops: false,
             fit_view_on_init: false,
             fit_view_padding: 50.0,
