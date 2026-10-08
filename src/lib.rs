@@ -13,7 +13,17 @@
 //! * animated dashed edges, travelling pulses, eased view transitions, node fade-in
 //! * built-in vector [`Icon`]s (check, chevrons, triangles, ...) that need no font
 //! * resizable nodes, undo/redo and copy/paste ([`Editor`])
+//! * groups / sub-flows: nesting, collapse, drag in and out, constrained members
+//!   ([`FlowViewer::can_join_group`], [`GroupDelete`])
+//! * auto layout ([`LayoutOptions`], [`FlowState::auto_layout_animated`]) and
+//!   [`FlowTheme`] colour presets
+//! * bus bars: [`Handle::along`] handles take wires anywhere along a side, and
+//!   [`FlowOptions::avoid_nodes`] routes step edges around nodes
+//! * crisp text at high zoom, node exit animation, pulse labels ([`PulseLabelMode`])
 //! * events for everything the application needs to mirror
+//!
+//! The [README](https://github.com/niketdhale/egui-flow#readme) has a guide to each feature,
+//! and `cargo run --example gateway` shows most of them together.
 //!
 //! ```no_run
 //! use egui_flow::{Flow, FlowState, FlowViewer, Node};
